@@ -159,11 +159,17 @@ def seed():
             db.add(period)
             db.flush()
 
-        # People + Assignments
+        # People + Assignments -- only the very first time. Once August has
+        # any rows, people may have deleted, renamed or merged cohorts in the
+        # app; re-importing the original sheet on every deploy brings those
+        # rows back.
         person_by_name = {}
         imported = 0
+        august_rows = AUGUST_ROWS
+        if db.query(Assignment.id).filter(Assignment.period_id == period.id).first():
+            august_rows = []
         for (person_name, prog_code, work_ref, role_name, rate, hours, adj, adj_reason,
-             extra_note, kevin_status) in AUGUST_ROWS:
+             extra_note, kevin_status) in august_rows:
 
             person = person_by_name.get(person_name)
             if not person:
