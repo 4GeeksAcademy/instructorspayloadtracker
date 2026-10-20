@@ -124,24 +124,79 @@ def update_assignment(
     db: Session = Depends(get_db),
     user: User = Depends(require_role(UserRole.program_lead, UserRole.admin, UserRole.owner)),
 ):
+    """
+    Two kinds of edit:
+    - Before submission (draft / rejected): the submitter can change every
+      field they entered. Program leads stay inside their own program.
+    - During review (submitted / admin_reviewed): admins and the owner can
+      correct cohort name, hours and rate before approving. Each change is
+      logged with before -> after so the final approver can see it.
+    Nothing can be edited once approved.
+    """
     assignment = db.query(Assignment).filter(Assignment.id == assignment_id).first()
     if not assignment:
         raise HTTPException(status_code=404, detail="Assignment not found")
-    if assignment.status not in (AssignmentStatus.draft, AssignmentStatus.rejected):
-        raise HTTPException(status_code=400, detail="Only draft or rejected assignments can be edited")
 
-    if payload.role_id is not None and not db.query(Role.id).filter(Role.id == payload.role_id).first():
-        raise HTTPException(status_code=400, detail=f"Invalid role_id: no record with id {payload.role_id}")
-    if payload.program_id is not None and not db.query(Program.id).filter(Program.id == payload.program_id).first():
-        raise HTTPException(status_code=400, detail=f"Invalid program_id: no record with id {payload.program_id}")
+    if user.role == UserRole.program_lead and user.program_id and assignment.program_id != user.program_id:
+        raise HTTPException(status_code=403, detail="You can only edit hours for your own program")
 
-    for field, value in payload.model_dump(exclude_unset=True).items():
+    changes = payload.model_dump(exclude_unset=True)
+    in_review = assignment.status in (AssignmentStatus.submitted, AssignmentStatus.admin_reviewed)
+
+    if assignment.status in (AssignmentStatus.draft, AssignmentStatus.rejected):
+        if user.role == UserRole.program_lead and user.program_id and changes.get("program_id", user.program_id) != user.program_id:
+            raise HTTPException(status_code=403, detail="You can only submit hours for your own program")
+    elif in_review:
+        if user.role not in (UserRole.admin, UserRole.owner):
+            raise HTTPException(status_code=400, detail="This item is already in review and can't be edited")
+        not_allowed = set(changes) - REVIEW_EDITABLE_FIELDS
+        if not_allowed:
+            raise HTTPException(
+                status_code=400,
+                detail="During review only cohort name, hours and rate can be changed",
+            )
+    else:
+        raise HTTPException(status_code=400, detail="Approved items can no longer be edited")
+
+    for field in ("work_reference", "rate", "hours"):
+        if field in changes and changes[field] is None:
+            raise HTTPException(status_code=400, detail=f"{field} can't be empty")
+    if "work_reference" in changes and not str(changes["work_reference"]).strip():
+        raise HTTPException(status_code=400, detail="Cohort / work reference can't be empty")
+    for field in ("rate", "hours"):
+        if changes.get(field) is not None and changes[field] < 0:
+            raise HTTPException(status_code=400, detail=f"{field} can't be negative")
+
+    _validate_references(db, payload)
+
+    diffs = []
+    for field, value in changes.items():
+        old = getattr(assignment, field)
+        if old != value:
+            diffs.append(f"{REVIEW_FIELD_LABELS.get(field, field)} {_fmt(old)} → {_fmt(value)}")
         setattr(assignment, field, value)
 
-    _log(db, assignment.id, user.id, "edited")
+    if in_review:
+        if diffs:
+            _log(db, assignment.id, user.id, "review_edit", "; ".join(diffs))
+    else:
+        _log(db, assignment.id, user.id, "edited", "; ".join(diffs) or None)
     db.commit()
     db.refresh(assignment)
     return _with_relations(db.query(Assignment)).filter(Assignment.id == assignment.id).first()
+
+
+REVIEW_EDITABLE_FIELDS = {"work_reference", "hours", "rate"}
+REVIEW_FIELD_LABELS = {"work_reference": "Cohort", "hours": "Hours", "rate": "Rate"}
+
+
+def _fmt(value) -> str:
+    if value is None:
+        return "—"
+    try:
+        return f"{float(value):g}"
+    except (TypeError, ValueError):
+        return f'"{value}"'
 
 
 def _transition(

@@ -460,3 +460,9 @@ label {
   color: var(--muted);
   font-size: 12px;
 }
+
+/* ---------- Editing (drafts + reviewer corrections) ---------- */
+.editing-card { border-color: var(--blue, #2381ff); box-shadow: 0 0 0 3px rgba(35, 129, 255, 0.12); }
+tr.row-editing td { background: rgba(35, 129, 255, 0.06); }
+.cell-input { padding: 6px 8px; font-size: 13px; }
+.review-changes { margin-top: 4px; font-size: 12px; color: #b26a00; line-height: 1.4; }

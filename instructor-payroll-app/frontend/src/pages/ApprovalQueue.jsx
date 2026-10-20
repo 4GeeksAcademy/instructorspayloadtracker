@@ -2,9 +2,10 @@ import { useEffect, useState, useCallback } from "react";
 import client from "../api/client";
 import StatusPill from "../components/StatusPill.jsx";
 import PeriodSelector from "../components/PeriodSelector.jsx";
+import { useReviewEdit, ReviewEditCells, ReviewChanges } from "../components/useReviewEdit.jsx";
 
 const TABS = [
-  { status: "admin_reviewed", label: "Awaiting final approval", action: "approve", actionLabel: "Approve" },
+  { status: "admin_reviewed", label: "Awaiting final approval", action: "approve", actionLabel: "Approve", editable: true },
   { status: "approved", label: "Approved — ready for payroll", action: "register", actionLabel: "Mark registered" },
   { status: "registered", label: "Registered — awaiting payment", action: "mark-paid", actionLabel: "Mark paid" },
 ];
@@ -34,6 +35,23 @@ export default function ApprovalQueue() {
     load();
   }, [load]);
 
+  const edit = useReviewEdit(load);
+  const [rejectingId, setRejectingId] = useState(null);
+  const [rejectReason, setRejectReason] = useState("");
+
+  async function reject(id) {
+    await client.post(`/assignments/${id}/reject`, { reason: rejectReason });
+    setRejectingId(null);
+    setRejectReason("");
+    load();
+  }
+
+  function switchTab(t) {
+    edit.cancel();
+    setRejectingId(null);
+    setTab(t);
+  }
+
   async function act(id) {
     await client.post(`/assignments/${id}/${tab.action}`);
     load();
@@ -60,7 +78,7 @@ export default function ApprovalQueue() {
           <button
             key={t.status}
             className={tab.status === t.status ? "primary" : "secondary"}
-            onClick={() => setTab(t)}
+            onClick={() => switchTab(t)}
           >
             {t.label}
           </button>
@@ -68,6 +86,7 @@ export default function ApprovalQueue() {
       </div>
 
       <div className="card">
+        {edit.error && <div className="banner">{edit.error}</div>}
         {assignments.length === 0 ? (
           <div className="empty-state">Nothing in this stage.</div>
         ) : (
@@ -80,25 +99,60 @@ export default function ApprovalQueue() {
                   <th>Role</th>
                   <th>Work reference</th>
                   <th>Hours</th>
+                  <th>Rate</th>
                   <th>Total</th>
                   <th>Status</th>
-                  <th></th>
+                  <th style={{ width: tab.editable ? 300 : undefined }}></th>
                 </tr>
               </thead>
               <tbody>
                 {assignments.map((a) => (
-                  <tr key={a.id}>
-                    <td>{a.person.name}</td>
+                  <tr key={a.id} className={edit.isEditing(a) ? "row-editing" : ""}>
+                    <td>
+                      {a.person.name}
+                      <ReviewChanges a={a} />
+                    </td>
                     <td>{a.program.code}</td>
                     <td>{a.role.name}</td>
-                    <td>{a.work_reference}</td>
-                    <td>{a.hours}</td>
-                    <td>${a.total_amount.toFixed(2)}</td>
+                    <ReviewEditCells a={a} edit={edit} />
+                    <td>${(edit.isEditing(a) ? edit.previewTotal(a) : a.total_amount).toFixed(2)}</td>
                     <td><StatusPill status={a.status} /></td>
                     <td>
-                      <button className="primary" onClick={() => act(a.id)}>
-                        {tab.actionLabel}
-                      </button>
+                      {edit.isEditing(a) ? (
+                        <div className="actions">
+                          <button className="primary" onClick={() => edit.save(a)} disabled={edit.saving}>
+                            {edit.saving ? "Saving..." : "Save"}
+                          </button>
+                          <button className="secondary" onClick={edit.cancel}>Cancel</button>
+                        </div>
+                      ) : rejectingId === a.id ? (
+                        <div className="actions">
+                          <input
+                            placeholder="Reason"
+                            value={rejectReason}
+                            onChange={(e) => setRejectReason(e.target.value)}
+                            style={{ width: 140 }}
+                          />
+                          <button className="danger" onClick={() => reject(a.id)}>Confirm</button>
+                          <button className="secondary" onClick={() => setRejectingId(null)}>Cancel</button>
+                        </div>
+                      ) : (
+                        <div className="actions">
+                          {tab.editable && (
+                            <button className="secondary" onClick={() => edit.start(a)} disabled={edit.editingId !== null}>
+                              Edit
+                            </button>
+                          )}
+                          <button className="primary" onClick={() => act(a.id)} disabled={edit.editingId !== null}>
+                            {tab.actionLabel}
+                          </button>
+                          {tab.editable && (
+                            <button className="danger" onClick={() => setRejectingId(a.id)} disabled={edit.editingId !== null}>
+                              Reject
+                            </button>
+                          )}
+                        </div>
+                      )}
                     </td>
                   </tr>
                 ))}

@@ -42,6 +42,7 @@ export default function SubmitHours() {
   const [form, setForm] = useState(EMPTY_FORM);
   const [error, setError] = useState("");
   const [saving, setSaving] = useState(false);
+  const [editingId, setEditingId] = useState(null);
 
   const loadReference = useCallback(async () => {
     const [p, prog, r, ppl] = await Promise.all([
@@ -70,6 +71,7 @@ export default function SubmitHours() {
 
   useEffect(() => {
     loadAssignments();
+    setEditingId(null);
   }, [loadAssignments]);
 
   async function findOrCreatePerson(name) {
@@ -87,20 +89,30 @@ export default function SubmitHours() {
     setSaving(true);
     try {
       const personId = await findOrCreatePerson(form.person_name);
-      await client.post("/assignments", {
+      const body = {
         person_id: personId,
         program_id: Number(form.program_id),
         role_id: Number(form.role_id),
-        period_id: periodId,
         work_reference: form.work_reference,
-        work_category: form.work_category || null,
         rate: Number(form.rate),
         hours: Number(form.hours || 0),
         adjustment_amount: Number(form.adjustment_amount || 0),
         adjustment_reason: form.adjustment_reason || null,
         hours_verified: form.hours_verified,
         notes: form.notes || null,
-      });
+      };
+      if (editingId) {
+        // Only send a category when one is picked; "auto-detect" keeps the current one.
+        if (form.work_category) body.work_category = form.work_category;
+        await client.patch(`/assignments/${editingId}`, body);
+        setEditingId(null);
+      } else {
+        await client.post("/assignments", {
+          ...body,
+          period_id: periodId,
+          work_category: form.work_category || null,
+        });
+      }
       setForm({ ...EMPTY_FORM, program_id: user.program_id || "" });
       loadAssignments();
     } catch (err) {
@@ -108,6 +120,31 @@ export default function SubmitHours() {
     } finally {
       setSaving(false);
     }
+  }
+
+  function startEdit(a) {
+    setError("");
+    setEditingId(a.id);
+    setForm({
+      person_name: a.person.name,
+      program_id: a.program.id,
+      role_id: a.role.id,
+      work_reference: a.work_reference,
+      work_category: a.work_category,
+      rate: String(a.rate),
+      hours: String(a.hours),
+      adjustment_amount: String(a.adjustment_amount),
+      adjustment_reason: a.adjustment_reason || "",
+      hours_verified: a.hours_verified,
+      notes: a.notes || "",
+    });
+    window.scrollTo({ top: 0, behavior: "smooth" });
+  }
+
+  function cancelEdit() {
+    setEditingId(null);
+    setError("");
+    setForm({ ...EMPTY_FORM, program_id: user.program_id || "" });
   }
 
   async function submitForReview(id) {
@@ -134,8 +171,13 @@ export default function SubmitHours() {
         <PeriodSelector periods={periods} value={periodId} onChange={setPeriodId} />
       )}
 
-      <div className="card" style={{ marginBottom: 24 }}>
-        <h3 style={{ marginTop: 0 }}>New assignment</h3>
+      <div className={`card${editingId ? " editing-card" : ""}`} style={{ marginBottom: 24 }}>
+        <h3 style={{ marginTop: 0 }}>{editingId ? "Edit assignment" : "New assignment"}</h3>
+        {editingId && (
+          <p className="small-muted" style={{ marginTop: -6 }}>
+            Change anything you need, then save. It stays a draft until you submit it for review.
+          </p>
+        )}
         {error && <div className="banner">{error}</div>}
         <form onSubmit={onSubmit}>
           <div className="form-grid">
@@ -263,9 +305,16 @@ export default function SubmitHours() {
               <label style={{ margin: 0 }}>Hours verified</label>
             </div>
           </div>
-          <button className="primary" disabled={saving}>
-            {saving ? "Saving..." : "Add as draft"}
-          </button>
+          <div className="actions">
+            <button className="primary" disabled={saving}>
+              {saving ? "Saving..." : editingId ? "Save changes" : "Add as draft"}
+            </button>
+            {editingId && (
+              <button type="button" className="secondary" onClick={cancelEdit}>
+                Cancel
+              </button>
+            )}
+          </div>
         </form>
       </div>
 
@@ -291,7 +340,7 @@ export default function SubmitHours() {
             </thead>
             <tbody>
               {editable.map((a) => (
-                <tr key={a.id}>
+                <tr key={a.id} className={editingId === a.id ? "row-editing" : ""}>
                   <td>{a.person.name}</td>
                   <td>{a.program.code}</td>
                   <td>{a.role.name}</td>
@@ -300,11 +349,25 @@ export default function SubmitHours() {
                   <td>{a.hours}</td>
                   <td>${Number(a.rate).toFixed(2)}</td>
                   <td>${a.total_amount.toFixed(2)}</td>
-                  <td><StatusPill status={a.status} /></td>
                   <td>
-                    <button className="primary" onClick={() => submitForReview(a.id)}>
-                      Submit for review
-                    </button>
+                    <StatusPill status={a.status} />
+                    {a.rejection_reason && (
+                      <div className="small-muted" style={{ marginTop: 4 }}>Reason: {a.rejection_reason}</div>
+                    )}
+                  </td>
+                  <td>
+                    <div className="actions">
+                      <button className="secondary" onClick={() => startEdit(a)} disabled={editingId === a.id}>
+                        Edit
+                      </button>
+                      <button
+                        className="primary"
+                        onClick={() => submitForReview(a.id)}
+                        disabled={editingId === a.id}
+                      >
+                        Submit for review
+                      </button>
+                    </div>
                   </td>
                 </tr>
               ))}

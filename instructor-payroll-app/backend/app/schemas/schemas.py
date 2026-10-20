@@ -106,6 +106,8 @@ class AssignmentCreate(BaseModel):
 
 
 class AssignmentUpdate(BaseModel):
+    person_id: Optional[int] = None
+    period_id: Optional[int] = None
     work_reference: Optional[str] = None
     work_category: Optional[WorkCategory] = None
     rate: Optional[Decimal] = None
@@ -139,6 +141,8 @@ class AssignmentOut(BaseModel):
     submitted_at: Optional[datetime] = None
     reviewed_at: Optional[datetime] = None
     approved_at: Optional[datetime] = None
+    review_changes: list[str] = []
+    rejection_reason: Optional[str] = None
 
 
 class AssignmentStatusChange(BaseModel):

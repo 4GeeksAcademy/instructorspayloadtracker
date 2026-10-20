@@ -259,6 +259,34 @@ class Assignment(Base):
     program = relationship("Program", back_populates="assignments")
     role = relationship("Role", back_populates="assignments")
     period = relationship("PayPeriod", back_populates="assignments")
+    # Read-only view of the audit trail -- no schema change, just a join on
+    # the existing audit_log.assignment_id FK.
+    audit_entries = relationship(
+        "AuditLog",
+        primaryjoin="Assignment.id == foreign(AuditLog.assignment_id)",
+        order_by="AuditLog.id",
+        viewonly=True,
+    )
+
+    @property
+    def review_changes(self) -> list[str]:
+        """Edits reviewers made after submission (cohort/hours/rate), oldest first."""
+        out = []
+        for e in self.audit_entries or []:
+            if e.action == "review_edit" and e.details:
+                who = e.user.name if e.user else "Reviewer"
+                out.append(f"{who}: {e.details}")
+        return out
+
+    @property
+    def rejection_reason(self) -> str | None:
+        """Latest reason given when this item was sent back, if it's currently rejected."""
+        if self.status != AssignmentStatus.rejected:
+            return None
+        for e in reversed(self.audit_entries or []):
+            if e.action == "rejected":
+                return e.details
+        return None
 
     @property
     def calculated_amount(self) -> float:
@@ -278,3 +306,5 @@ class AuditLog(Base):
     action = Column(String(80), nullable=False)   # e.g. "submitted", "admin_reviewed", "approved", "edited"
     details = Column(Text, nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+    user = relationship("User", viewonly=True)
