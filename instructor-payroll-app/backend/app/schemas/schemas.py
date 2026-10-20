@@ -256,6 +256,21 @@ class StudentOut(BaseModel):
     updated_at: Optional[datetime] = None
 
 
+class CohortImpact(BaseModel):
+    student_count: int
+    enrollment_count: int
+    assignment_count: int
+    locked_assignment_count: int  # submitted / approved / registered / paid
+    locked_amount: float
+    can_delete: bool
+
+
+class CohortRename(BaseModel):
+    program_id: int
+    work_reference: str
+    new_work_reference: str
+
+
 class CohortRevenueSummary(BaseModel):
     program_code: str
     work_reference: str
