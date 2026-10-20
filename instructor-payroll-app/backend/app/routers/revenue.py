@@ -5,7 +5,7 @@ from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.core.database import get_db
-from app.core.deps import require_role
+from app.core.deps import require_owner_or_view_all, require_role
 from app.models.models import (
     Assignment,
     AssignmentStatus,
@@ -106,7 +106,7 @@ def delete_student(
 def revenue_summary(
     period_id: Optional[int] = None,
     db: Session = Depends(get_db),
-    user: User = Depends(require_role(UserRole.owner)),
+    user: User = Depends(require_owner_or_view_all),
 ):
     """
     One row per cohort that has student payment data and/or cohort_class
@@ -119,7 +119,11 @@ def revenue_summary(
     margin). Admins can manage the student roster above but not this.
     """
     if period_id is None:
-        latest = db.query(PayPeriod).order_by(PayPeriod.start_date.desc()).first()
+        # Latest month that has started (the Costs Hub can create future months).
+        from datetime import date as _date
+        latest = (db.query(PayPeriod).filter(PayPeriod.start_date <= _date.today())
+                  .order_by(PayPeriod.start_date.desc()).first()
+                  or db.query(PayPeriod).order_by(PayPeriod.start_date.desc()).first())
         period_id = latest.id if latest else None
 
     student_rows = (

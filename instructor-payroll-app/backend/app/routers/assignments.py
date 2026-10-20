@@ -7,7 +7,7 @@ from sqlalchemy.orm import Session, joinedload
 
 from app.core.categorize import suggest_work_category
 from app.core.database import get_db
-from app.core.deps import get_current_user, require_role
+from app.core.deps import get_current_user, require_instructors, require_role
 from app.models.models import (
     Assignment,
     AssignmentStatus,
@@ -32,7 +32,7 @@ from app.schemas.schemas import (
     ProgramSummary,
 )
 
-router = APIRouter(prefix="/assignments", tags=["assignments"], dependencies=[Depends(get_current_user)])
+router = APIRouter(prefix="/assignments", tags=["assignments"], dependencies=[Depends(require_instructors)])
 
 
 def _log(db: Session, assignment_id: int, user_id: int, action: str, details: str | None = None):

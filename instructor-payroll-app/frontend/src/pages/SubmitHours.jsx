@@ -1,3 +1,4 @@
+import { currentPeriod } from "../api/periods.js";
 import { useEffect, useState, useCallback } from "react";
 import client from "../api/client";
 import { useAuth } from "../api/auth.jsx";
@@ -55,7 +56,7 @@ export default function SubmitHours() {
     setPrograms(prog.data);
     setRoles(r.data);
     setPeople(ppl.data);
-    if (p.data.length && !periodId) setPeriodId(p.data[0].id);
+    if (p.data.length && !periodId) setPeriodId(currentPeriod(p.data).id);
     if (user.program_id) setForm((f) => ({ ...f, program_id: user.program_id }));
   }, [periodId, user.program_id]);
 

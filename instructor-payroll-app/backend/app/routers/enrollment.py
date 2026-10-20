@@ -2,11 +2,11 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
 from app.core.database import get_db
-from app.core.deps import get_current_user, require_role
+from app.core.deps import get_current_user, require_instructors, require_role
 from app.models.models import CohortEnrollment, PayPeriod, Program, User, UserRole
 from app.schemas.schemas import CohortEnrollmentOut, CohortEnrollmentUpsert
 
-router = APIRouter(prefix="/enrollment", tags=["enrollment"], dependencies=[Depends(get_current_user)])
+router = APIRouter(prefix="/enrollment", tags=["enrollment"], dependencies=[Depends(require_instructors)])
 
 
 @router.get("", response_model=list[CohortEnrollmentOut])

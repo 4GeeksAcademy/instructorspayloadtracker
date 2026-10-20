@@ -1,3 +1,4 @@
+import { currentPeriod } from "../api/periods.js";
 import { useEffect, useState, useCallback } from "react";
 import client from "../api/client";
 import PeriodSelector from "../components/PeriodSelector.jsx";
@@ -16,7 +17,8 @@ const EMPTY_STUDENT = {
 
 export default function Revenue() {
   const { user } = useAuth();
-  const isOwner = user.role === "owner";
+  // Owner, or a "sees everything" viewer (Alejandro), gets the revenue summary.
+  const isOwner = user.role === "owner" || !!user.view_all;
 
   const [periods, setPeriods] = useState([]);
   const [periodId, setPeriodId] = useState(null);
@@ -40,7 +42,7 @@ export default function Revenue() {
     if (isOwner) {
       client.get("/periods").then((res) => {
         setPeriods(res.data);
-        if (res.data.length) setPeriodId(res.data[0].id);
+        if (res.data.length) setPeriodId(currentPeriod(res.data).id);
       });
     }
     client.get("/programs").then((res) => setPrograms(res.data));

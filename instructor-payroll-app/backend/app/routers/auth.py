@@ -36,3 +36,9 @@ def change_own_password(
     user.hashed_password = hash_password(payload.new_password)
     db.commit()
     return None
+
+
+@router.get("/me", response_model=UserOut)
+def me(user: User = Depends(get_current_user)):
+    """Current user, including section access -- the frontend refreshes this on load."""
+    return user
