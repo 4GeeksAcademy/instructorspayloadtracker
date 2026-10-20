@@ -31,6 +31,10 @@ export default function Revenue() {
   const [savingId, setSavingId] = useState(null);
   const [confirmDeleteId, setConfirmDeleteId] = useState(null);
   const [error, setError] = useState("");
+  // Cohort clean-up: { program, work_reference, mode: "delete" | "rename", impact, newName }
+  const [cohortAction, setCohortAction] = useState(null);
+  const [cohortBusy, setCohortBusy] = useState(false);
+  const [cohortError, setCohortError] = useState("");
 
   useEffect(() => {
     if (isOwner) {
@@ -137,6 +141,55 @@ export default function Revenue() {
     }
   };
 
+  const startCohortAction = async (program, workReference, mode) => {
+    setCohortError("");
+    setCohortAction({ program, work_reference: workReference, mode, impact: null, newName: "" });
+    setTimeout(
+      () => document.querySelector(".cohort-action")?.scrollIntoView({ behavior: "smooth", block: "center" }),
+      0
+    );
+    try {
+      const res = await client.get("/revenue/cohorts/impact", {
+        params: { program_id: program.id, work_reference: workReference },
+      });
+      setCohortAction((cur) =>
+        cur && cur.work_reference === workReference && cur.program.id === program.id
+          ? { ...cur, impact: res.data }
+          : cur
+      );
+    } catch (err) {
+      setCohortError(err.response?.data?.detail || "Could not load cohort details");
+    }
+  };
+
+  const confirmCohortAction = async () => {
+    const a = cohortAction;
+    setCohortBusy(true);
+    setCohortError("");
+    try {
+      if (a.mode === "delete") {
+        await client.delete("/revenue/cohorts", {
+          params: { program_id: a.program.id, work_reference: a.work_reference },
+        });
+      } else {
+        await client.post("/revenue/cohorts/rename", {
+          program_id: a.program.id,
+          work_reference: a.work_reference,
+          new_work_reference: a.newName.trim(),
+        });
+      }
+      if (selectedCohort === a.work_reference) openCohort("", "");
+      setCohortAction(null);
+      await loadSummary();
+    } catch (err) {
+      setCohortError(err.response?.data?.detail || "Could not update cohort");
+    } finally {
+      setCohortBusy(false);
+    }
+  };
+
+  const plural = (n, word) => `${n} ${word}${n === 1 ? "" : "s"}`;
+
   // Cohorts already seen in revenue data, for the picker below -- plus
   // whatever's typed lets you start a brand-new one. Admins don't have the
   // summary to draw this from, so they just type the cohort's reference.
@@ -173,6 +226,100 @@ export default function Revenue() {
                 No revenue or cost data yet. Pick a program and cohort below to add students.
               </div>
             ) : (
+              <>
+              {cohortAction && (
+                <div className="cohort-action">
+                  {cohortError && <div className="banner">{cohortError}</div>}
+                  {!cohortAction.impact ? (
+                    !cohortError && <div className="small-muted">Checking what this cohort contains…</div>
+                  ) : cohortAction.mode === "delete" ? (
+                    <>
+                      <strong>
+                        Delete {cohortAction.program.code} · {cohortAction.work_reference}?
+                      </strong>
+                      {cohortAction.impact.can_delete ? (
+                        <p className="small-muted">
+                          This permanently removes {plural(cohortAction.impact.student_count, "student")},{" "}
+                          {plural(cohortAction.impact.enrollment_count, "headcount entry")} and{" "}
+                          {plural(cohortAction.impact.assignment_count, "draft payroll row")} under this name.
+                        </p>
+                      ) : (
+                        <p className="small-muted">
+                          Can't delete: {plural(cohortAction.impact.locked_assignment_count, "payroll row")} (
+                          {money(cohortAction.impact.locked_amount)}) under this name are already in review,
+                          approved or paid. If the name is a typo or was changed later,{" "}
+                          <button
+                            className="linklike"
+                            onClick={() => setCohortAction({ ...cohortAction, mode: "rename" })}
+                          >
+                            merge it into the correct cohort
+                          </button>{" "}
+                          instead — the cost then shows next to that cohort's revenue.
+                        </p>
+                      )}
+                      <div className="actions">
+                        {cohortAction.impact.can_delete && (
+                          <button className="danger" onClick={confirmCohortAction} disabled={cohortBusy}>
+                            {cohortBusy ? "Deleting…" : "Delete cohort"}
+                          </button>
+                        )}
+                        <button className="secondary" onClick={() => setCohortAction(null)}>Cancel</button>
+                      </div>
+                    </>
+                  ) : (
+                    <>
+                      <strong>
+                        Rename / merge {cohortAction.program.code} · {cohortAction.work_reference}
+                      </strong>
+                      <p className="small-muted">
+                        Moves {plural(cohortAction.impact.student_count, "student")} and{" "}
+                        {plural(cohortAction.impact.assignment_count, "payroll row")} to the new name. Pick an
+                        existing cohort to merge them into it. Pay amounts don't change.
+                      </p>
+                      <div className="actions">
+                        <input
+                          list="merge-targets"
+                          placeholder="New or existing cohort name"
+                          value={cohortAction.newName}
+                          onChange={(e) => setCohortAction({ ...cohortAction, newName: e.target.value })}
+                          style={{ width: 260 }}
+                        />
+                        <datalist id="merge-targets">
+                          {summary
+                            .filter(
+                              (c) =>
+                                c.program_code === cohortAction.program.code &&
+                                c.work_reference !== cohortAction.work_reference
+                            )
+                            .map((c) => (
+                              <option key={c.work_reference} value={c.work_reference} />
+                            ))}
+                        </datalist>
+                        <button
+                          className="primary"
+                          onClick={confirmCohortAction}
+                          disabled={
+                            cohortBusy ||
+                            !cohortAction.newName.trim() ||
+                            cohortAction.newName.trim() === cohortAction.work_reference
+                          }
+                        >
+                          {cohortBusy
+                            ? "Saving…"
+                            : summary.some(
+                                (c) =>
+                                  c.program_code === cohortAction.program.code &&
+                                  c.work_reference === cohortAction.newName.trim()
+                              )
+                            ? "Merge"
+                            : "Rename"}
+                        </button>
+                        <button className="secondary" onClick={() => setCohortAction(null)}>Cancel</button>
+                      </div>
+                    </>
+                  )}
+                </div>
+              )}
               <table>
                 <thead>
                   <tr>
@@ -213,13 +360,29 @@ export default function Revenue() {
                           </td>
                           <td>
                             {program && (
-                              <button
-                                className="secondary"
-                                style={{ padding: "6px 12px", fontSize: 12 }}
-                                onClick={() => openCohort(program.id, c.work_reference)}
-                              >
-                                Manage students
-                              </button>
+                              <div className="actions" style={{ flexWrap: "nowrap" }}>
+                                <button
+                                  className="secondary"
+                                  style={{ padding: "6px 12px", fontSize: 12 }}
+                                  onClick={() => openCohort(program.id, c.work_reference)}
+                                >
+                                  Manage students
+                                </button>
+                                <button
+                                  className="secondary"
+                                  style={{ padding: "6px 12px", fontSize: 12 }}
+                                  onClick={() => startCohortAction(program, c.work_reference, "rename")}
+                                >
+                                  Rename / merge
+                                </button>
+                                <button
+                                  className="danger"
+                                  style={{ padding: "6px 12px", fontSize: 12 }}
+                                  onClick={() => startCohortAction(program, c.work_reference, "delete")}
+                                >
+                                  Delete
+                                </button>
+                              </div>
                             )}
                           </td>
                         </tr>
@@ -227,6 +390,7 @@ export default function Revenue() {
                     })}
                 </tbody>
               </table>
+              </>
             )}
           </div>
         </>
