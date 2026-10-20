@@ -1,4 +1,5 @@
 import { useEffect, useState, useCallback } from "react";
+import { Link } from "react-router-dom";
 import client from "../api/client";
 import StatusPill from "../components/StatusPill.jsx";
 import PeriodSelector from "../components/PeriodSelector.jsx";
@@ -6,8 +7,6 @@ import { useReviewEdit, ReviewEditCells, ReviewChanges } from "../components/use
 
 const TABS = [
   { status: "admin_reviewed", label: "Awaiting final approval", action: "approve", actionLabel: "Approve", editable: true },
-  { status: "approved", label: "Approved — ready for payroll", action: "register", actionLabel: "Mark registered" },
-  { status: "registered", label: "Registered — awaiting payment", action: "mark-paid", actionLabel: "Mark paid" },
 ];
 
 export default function ApprovalQueue() {
@@ -65,25 +64,27 @@ export default function ApprovalQueue() {
         Final <em>approval</em>
       </h1>
       <p className="subhead">
-        Marcelo's sign-off, then payroll registration and payment tracking —
-        mirrors what the "Kevin" status column used to track.
+        Marcelo's sign-off. Once approved, items go to the <Link to="/payments">Payments</Link> page,
+        where admins see who to pay and mark them registered / paid.
       </p>
 
       {periods.length > 0 && (
         <PeriodSelector periods={periods} value={periodId} onChange={setPeriodId} />
       )}
 
-      <div className="nav" style={{ marginBottom: 16 }}>
-        {TABS.map((t) => (
-          <button
-            key={t.status}
-            className={tab.status === t.status ? "primary" : "secondary"}
-            onClick={() => switchTab(t)}
-          >
-            {t.label}
-          </button>
-        ))}
-      </div>
+      {TABS.length > 1 && (
+        <div className="nav" style={{ marginBottom: 16 }}>
+          {TABS.map((t) => (
+            <button
+              key={t.status}
+              className={tab.status === t.status ? "primary" : "secondary"}
+              onClick={() => switchTab(t)}
+            >
+              {t.label}
+            </button>
+          ))}
+        </div>
+      )}
 
       <div className="card">
         {edit.error && <div className="banner">{edit.error}</div>}

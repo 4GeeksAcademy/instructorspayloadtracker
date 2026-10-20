@@ -28,6 +28,7 @@ from app.schemas.schemas import (
     AssignmentUpdate,
     CategorySummary,
     CohortSummary,
+    PaymentStatusChange,
     PersonSummary,
     ProgramSummary,
 )
@@ -331,6 +332,51 @@ def mark_paid_assignment(
         allowed_from=[AssignmentStatus.registered],
         to_status=AssignmentStatus.paid,
         action="paid",
+    )
+
+
+PAYMENT_STATUSES = (AssignmentStatus.approved, AssignmentStatus.registered, AssignmentStatus.paid)
+
+
+@router.post("/payment-status", response_model=list[AssignmentOut])
+def set_payment_status(
+    payload: PaymentStatusChange,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_role(UserRole.admin, UserRole.owner)),
+):
+    """
+    Payments desk: after final approval, set one or many rows to pending
+    payment (approved), registered in the payroll system, or paid. Moving
+    back (e.g. paid -> pending) is allowed to fix a mis-click; every change
+    is audit-logged. Only works on rows that already have final approval.
+    """
+    if payload.status not in PAYMENT_STATUSES:
+        raise HTTPException(status_code=400, detail="Status must be pending payment, registered or paid")
+    if not payload.assignment_ids:
+        return []
+
+    rows = db.query(Assignment).filter(Assignment.id.in_(payload.assignment_ids)).all()
+    if len(rows) != len(set(payload.assignment_ids)):
+        raise HTTPException(status_code=404, detail="Some assignments were not found")
+    not_ready = [a.id for a in rows if a.status not in PAYMENT_STATUSES]
+    if not_ready:
+        raise HTTPException(status_code=400, detail="Only items with final approval can be marked for payment")
+
+    action = {
+        AssignmentStatus.approved: "payment_pending",
+        AssignmentStatus.registered: "registered",
+        AssignmentStatus.paid: "paid",
+    }[payload.status]
+    for a in rows:
+        if a.status != payload.status:
+            _log(db, a.id, user.id, action, f"{a.status.value} → {payload.status.value}")
+            a.status = payload.status
+    db.commit()
+    return (
+        _with_relations(db.query(Assignment))
+        .filter(Assignment.id.in_(payload.assignment_ids))
+        .order_by(Assignment.id)
+        .all()
     )
 
 
