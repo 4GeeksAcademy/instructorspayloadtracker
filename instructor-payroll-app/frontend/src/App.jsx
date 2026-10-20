@@ -6,6 +6,7 @@ import SubmitHours from "./pages/SubmitHours.jsx";
 import ReviewQueue from "./pages/ReviewQueue.jsx";
 import ApprovalQueue from "./pages/ApprovalQueue.jsx";
 import Revenue from "./pages/Revenue.jsx";
+import Payments from "./pages/Payments.jsx";
 import Settings from "./pages/Settings.jsx";
 
 function RequireAuth({ children }) {
@@ -44,6 +45,9 @@ function Shell() {
           )}
           {user.role === "owner" && <NavLink to="/approve">Final Approval</NavLink>}
           {(user.role === "admin" || user.role === "owner") && (
+            <NavLink to="/payments">Payments</NavLink>
+          )}
+          {(user.role === "admin" || user.role === "owner") && (
             <NavLink to="/revenue">{user.role === "owner" ? "Revenue" : "Students"}</NavLink>
           )}
         </div>
@@ -63,6 +67,14 @@ function Shell() {
           <Route path="/submit" element={<SubmitHours />} />
           <Route path="/review" element={<ReviewQueue />} />
           <Route path="/approve" element={<ApprovalQueue />} />
+          <Route
+            path="/payments"
+            element={
+              <RequireAdminOrOwner>
+                <Payments />
+              </RequireAdminOrOwner>
+            }
+          />
           <Route
             path="/revenue"
             element={

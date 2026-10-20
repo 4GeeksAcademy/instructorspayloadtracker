@@ -145,6 +145,11 @@ class AssignmentOut(BaseModel):
     rejection_reason: Optional[str] = None
 
 
+class PaymentStatusChange(BaseModel):
+    assignment_ids: list[int]
+    status: AssignmentStatus  # approved (pending payment) / registered / paid
+
+
 class AssignmentStatusChange(BaseModel):
     reason: Optional[str] = None
 
