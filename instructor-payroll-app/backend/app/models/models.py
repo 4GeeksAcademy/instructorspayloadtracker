@@ -86,6 +86,16 @@ class User(Base):
     active = Column(Boolean, default=True, nullable=False)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
+    # Section access (the app hosts two sections: Instructors and Costs Hub).
+    # Plain columns, not a new enum, so existing Postgres enum types don't
+    # need migrating -- see app/core/migrate.py for the ADD COLUMN step.
+    #   instructors_access: can open the Instructors (payroll hours) section
+    #   costs_access: "none" | "viewer" | "editor"  (owner is always full)
+    #   view_all: read-only access to everything, incl. owner-only views (Alejandro)
+    instructors_access = Column(Boolean, nullable=False, default=True, server_default="true")
+    costs_access = Column(String(20), nullable=False, default="none", server_default="none")
+    view_all = Column(Boolean, nullable=False, default=False, server_default="false")
+
     program = relationship("Program")
 
 
@@ -308,3 +318,115 @@ class AuditLog(Base):
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
     user = relationship("User", viewonly=True)
+
+
+class CostEntry(Base):
+    """
+    One line of the Costs Hub: a person, vendor, debt payment or other expense
+    for one month (pay period). Mirrors the monthly payroll sheet's columns
+    (Division, Rol o Departamento, Nombre completo, Monto, Status, Método,
+    Frecuencia, Mes, Priority) plus what the Hub needs on top:
+
+    - section: people | marketing | tech | operations | payroll_w2 | founders |
+      debt | taxes | reimbursement | instructors_ref | other
+      (instructors_ref = a bank-derived instructor total for months that have
+      no rows in the Instructors section, so the dashboard isn't blind there;
+      it's ignored automatically for any month that does have instructor rows.)
+    - paid_by: who actually carries the cost -- "4Geeks USA" vs "Iberoamérica"
+      / "España". Net USA cost = amount where paid_by is 4Geeks USA.
+    - confirmed: once the owner confirms an entry (or the whole month), only
+      the owner can change it.
+    - is_projection: rows created by "copy month forward" or seeded as an
+      estimate, until someone edits or confirms them.
+    - target_amount: an optional planned amount (what we want this line to
+      become) -- feeds the "What to adjust" view.
+    """
+    __tablename__ = "cost_entries"
+
+    id = Column(Integer, primary_key=True)
+    period_id = Column(Integer, ForeignKey("pay_periods.id"), nullable=False, index=True)
+
+    section = Column(String(30), nullable=False, default="people")
+    division = Column(String(30), nullable=True)          # USA | HQ | Latam | Spain | All
+    department = Column(String(150), nullable=True)       # "Rol o Departamento" / vendor category
+    name = Column(String(200), nullable=False)            # person or vendor
+    amount = Column(Numeric(12, 2), nullable=False, default=0)
+    status = Column(String(40), nullable=False, default="Pendiente")   # Pagado | Por pagar | Iberoamérica paga | España paga | Pendiente | Aprobar en Wise
+    method = Column(String(40), nullable=True)            # ACH, Zelle, Wise, Cash, Melio, Card, ACH debit...
+    frequency = Column(String(150), nullable=True)        # "30 de cada mes", "weekly"...
+    paid_by = Column(String(40), nullable=False, default="4Geeks USA")
+    priority = Column(String(20), nullable=True)          # Alta | Media | Baja
+    notes = Column(Text, nullable=True)
+    source = Column(String(40), nullable=True)            # payroll sheet | bank statement | estimate | manual
+    is_projection = Column(Boolean, nullable=False, default=False)
+    target_amount = Column(Numeric(12, 2), nullable=True)
+
+    confirmed = Column(Boolean, nullable=False, default=False)
+    confirmed_by = Column(Integer, ForeignKey("users.id"), nullable=True)
+    confirmed_at = Column(DateTime(timezone=True), nullable=True)
+
+    created_by = Column(Integer, ForeignKey("users.id"), nullable=True)
+    updated_by = Column(Integer, ForeignKey("users.id"), nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+    period = relationship("PayPeriod")
+
+
+class CostLog(Base):
+    """Audit trail for the Costs Hub (who changed what, when)."""
+    __tablename__ = "cost_log"
+
+    id = Column(Integer, primary_key=True)
+    entry_id = Column(Integer, nullable=True)
+    period_id = Column(Integer, nullable=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=True)
+    action = Column(String(60), nullable=False)
+    details = Column(Text, nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+    user = relationship("User", viewonly=True)
+
+
+class CostPeriodState(Base):
+    """
+    Month-level confirmation for the Costs Hub. When the owner confirms a
+    month, every entry in it is confirmed too and editors can no longer add,
+    change or delete anything in that month; the owner can unlock it again.
+    """
+    __tablename__ = "cost_period_state"
+
+    period_id = Column(Integer, ForeignKey("pay_periods.id"), primary_key=True)
+    confirmed = Column(Boolean, nullable=False, default=False)
+    confirmed_by = Column(Integer, ForeignKey("users.id"), nullable=True)
+    confirmed_at = Column(DateTime(timezone=True), nullable=True)
+    notes = Column(Text, nullable=True)
+
+
+class Loan(Base):
+    """
+    Loans & financing register for the Costs Hub "Loans" segment: what each
+    loan costs per week/month, how much is left and when it ends. Not tied to
+    one month -- it powers the week-by-week debit calendar. (The monthly debt
+    lines in cost_entries are what feed month totals; this is the schedule.)
+    """
+    __tablename__ = "loans"
+
+    id = Column(Integer, primary_key=True)
+    name = Column(String(150), nullable=False)
+    lender = Column(String(150), nullable=True)
+    kind = Column(String(40), nullable=True)               # MCA | Family | Founder | Private | Tax plan | Credit card
+    frequency = Column(String(20), nullable=False, default="weekly")   # weekly | monthly
+    payment = Column(Numeric(12, 2), nullable=False, default=0)        # per week or per month
+    payment_day = Column(String(40), nullable=True)        # "Friday", "1", "15"...
+    start_date = Column(Date, nullable=True)               # first payment of the current schedule
+    end_date = Column(Date, nullable=True)                 # last expected payment
+    original_amount = Column(Numeric(12, 2), nullable=True)
+    total_payback = Column(Numeric(12, 2), nullable=True)
+    balance_remaining = Column(Numeric(12, 2), nullable=True)
+    balance_as_of = Column(Date, nullable=True)
+    paid_by = Column(String(40), nullable=False, default="4Geeks USA")
+    status = Column(String(30), nullable=False, default="Active")      # Active | Paused | Paid off
+    notes = Column(Text, nullable=True)
+    updated_by = Column(Integer, ForeignKey("users.id"), nullable=True)
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())

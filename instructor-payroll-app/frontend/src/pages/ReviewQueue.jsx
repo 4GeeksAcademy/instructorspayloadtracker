@@ -1,3 +1,4 @@
+import { currentPeriod } from "../api/periods.js";
 import { useEffect, useState, useCallback } from "react";
 import client from "../api/client";
 import StatusPill from "../components/StatusPill.jsx";
@@ -22,7 +23,7 @@ export default function ReviewQueue() {
   useEffect(() => {
     client.get("/periods").then((res) => {
       setPeriods(res.data);
-      if (res.data.length) setPeriodId(res.data[0].id);
+      if (res.data.length) setPeriodId(currentPeriod(res.data).id);
     });
   }, []);
 

@@ -3,12 +3,14 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.core.config import settings
 from app.core.database import Base, engine
-from app.routers import assignments, auth, enrollment, reference, revenue, users
+from app.core.migrate import run_migrations
+from app.routers import assignments, auth, costs, enrollment, reference, revenue, users
 
 # For a real production rollout, prefer Alembic migrations over create_all.
 # create_all is kept here so the app also boots cleanly from a fresh DB
 # during local dev / first Railway deploy.
 Base.metadata.create_all(bind=engine)
+run_migrations()
 
 app = FastAPI(title="4Geeks Instructor Payroll", version="1.0.0")
 
@@ -26,6 +28,7 @@ app.include_router(assignments.router)
 app.include_router(enrollment.router)
 app.include_router(revenue.router)
 app.include_router(users.router)
+app.include_router(costs.router)
 
 
 @app.get("/health")

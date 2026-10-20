@@ -1,4 +1,4 @@
-import { createContext, useContext, useState, useCallback } from "react";
+import { createContext, useContext, useState, useCallback, useEffect } from "react";
 import client from "./client";
 
 const AuthContext = createContext(null);
@@ -20,6 +20,19 @@ export function AuthProvider({ children }) {
     localStorage.setItem("payroll_user", JSON.stringify(res.data.user));
     setUser(res.data.user);
     return res.data.user;
+  }, []);
+
+  // Refresh the stored user on load so access changes made in Settings
+  // (instructors / costs access) apply without logging out and in again.
+  useEffect(() => {
+    if (!localStorage.getItem("payroll_token")) return;
+    client
+      .get("/auth/me")
+      .then((res) => {
+        localStorage.setItem("payroll_user", JSON.stringify(res.data));
+        setUser(res.data);
+      })
+      .catch(() => {});
   }, []);
 
   const logout = useCallback(() => {

@@ -26,6 +26,8 @@ from decimal import Decimal
 
 from app.core.categorize import suggest_work_category
 from app.core.database import Base, SessionLocal, engine
+from app.core.migrate import run_migrations
+from app.costs_seed import seed_costs, seed_loans
 from app.core.security import hash_password
 from app.models.models import (
     Assignment,
@@ -109,6 +111,7 @@ STATUS_MAP = {
 
 def seed():
     Base.metadata.create_all(bind=engine)
+    run_migrations()
     db = SessionLocal()
     try:
         # Programs
@@ -203,6 +206,13 @@ def seed():
 
         db.commit()
         print(f"Seed complete. Imported {imported} new assignment rows for {period.label}.")
+
+        # Costs Hub: Jun-Sep 2026 history + Oct/Nov projections (only for
+        # months that have no cost lines yet -- never overwrites edits).
+        cost_rows = seed_costs(db)
+        loan_rows = seed_loans(db)
+        db.commit()
+        print(f"Costs Hub seed: {cost_rows} new cost lines, {loan_rows} loans.")
         # Deliberately no CohortEnrollment rows seeded here: there's no real
         # student headcount on file for August, so the dashboard should show
         # those fields blank ("not entered yet"), not a guessed number.

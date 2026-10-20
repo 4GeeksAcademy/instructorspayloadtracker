@@ -1,3 +1,4 @@
+import { currentPeriod } from "../api/periods.js";
 import { Fragment, useEffect, useState, useCallback } from "react";
 import client from "../api/client";
 import { useAuth } from "../api/auth.jsx";
@@ -99,7 +100,7 @@ export default function Dashboard() {
   useEffect(() => {
     client.get("/periods").then((res) => {
       setPeriods(res.data);
-      if (res.data.length) setPeriodId(res.data[0].id);
+      if (res.data.length) setPeriodId(currentPeriod(res.data).id);
     });
   }, []);
 

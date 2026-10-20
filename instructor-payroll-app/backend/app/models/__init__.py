@@ -11,4 +11,8 @@ from app.models.models import (  # noqa: F401
     AssignmentStatus,
     WorkCategory,
     AuditLog,
+    CostEntry,
+    CostLog,
+    CostPeriodState,
+    Loan,
 )

@@ -27,10 +27,34 @@ class UserOut(BaseModel):
     email: str
     role: UserRole
     program_id: Optional[int] = None
+    instructors_access: bool = True
+    costs_access: str = "none"
+    view_all: bool = False
 
 
 class UserAdminOut(UserOut):
     active: bool
+
+
+class UserCreate(BaseModel):
+    name: str
+    email: str
+    password: str = Field(min_length=8)
+    role: UserRole = UserRole.admin
+    program_id: Optional[int] = None
+    instructors_access: bool = True
+    costs_access: str = Field("none", pattern="^(none|viewer|editor)$")
+    view_all: bool = False
+
+
+class UserUpdate(BaseModel):
+    name: Optional[str] = None
+    role: Optional[UserRole] = None
+    program_id: Optional[int] = None
+    instructors_access: Optional[bool] = None
+    costs_access: Optional[str] = Field(None, pattern="^(none|viewer|editor)$")
+    view_all: Optional[bool] = None
+    active: Optional[bool] = None
 
 
 class ChangePasswordRequest(BaseModel):
@@ -286,3 +310,94 @@ class CohortRevenueSummary(BaseModel):
     period_label: Optional[str] = None
     period_cost: Optional[float] = None
     monthly_margin: Optional[float] = None
+
+
+# ---------- Costs Hub ----------
+
+class CostEntryBase(BaseModel):
+    section: str = "people"
+    division: Optional[str] = None
+    department: Optional[str] = None
+    name: str
+    amount: Decimal = Decimal("0")
+    status: str = "Pendiente"
+    method: Optional[str] = None
+    frequency: Optional[str] = None
+    paid_by: str = "4Geeks USA"
+    priority: Optional[str] = None
+    notes: Optional[str] = None
+    source: Optional[str] = "manual"
+    target_amount: Optional[Decimal] = None
+
+
+class CostEntryCreate(CostEntryBase):
+    period_id: int
+
+
+class CostEntryUpdate(BaseModel):
+    section: Optional[str] = None
+    division: Optional[str] = None
+    department: Optional[str] = None
+    name: Optional[str] = None
+    amount: Optional[Decimal] = None
+    status: Optional[str] = None
+    method: Optional[str] = None
+    frequency: Optional[str] = None
+    paid_by: Optional[str] = None
+    priority: Optional[str] = None
+    notes: Optional[str] = None
+    source: Optional[str] = None
+    target_amount: Optional[Decimal] = None
+    period_id: Optional[int] = None
+
+
+class CostEntryOut(CostEntryBase):
+    model_config = ConfigDict(from_attributes=True)
+    id: int
+    period_id: int
+    is_projection: bool
+    confirmed: bool
+    confirmed_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
+
+
+class LoanBase(BaseModel):
+    name: str
+    lender: Optional[str] = None
+    kind: Optional[str] = None
+    frequency: str = Field("weekly", pattern="^(weekly|monthly)$")
+    payment: Decimal = Decimal("0")
+    payment_day: Optional[str] = None
+    start_date: Optional[date] = None
+    end_date: Optional[date] = None
+    original_amount: Optional[Decimal] = None
+    total_payback: Optional[Decimal] = None
+    balance_remaining: Optional[Decimal] = None
+    balance_as_of: Optional[date] = None
+    paid_by: str = "4Geeks USA"
+    status: str = "Active"
+    notes: Optional[str] = None
+
+
+class LoanUpdate(BaseModel):
+    name: Optional[str] = None
+    lender: Optional[str] = None
+    kind: Optional[str] = None
+    frequency: Optional[str] = Field(None, pattern="^(weekly|monthly)$")
+    payment: Optional[Decimal] = None
+    payment_day: Optional[str] = None
+    start_date: Optional[date] = None
+    end_date: Optional[date] = None
+    original_amount: Optional[Decimal] = None
+    total_payback: Optional[Decimal] = None
+    balance_remaining: Optional[Decimal] = None
+    balance_as_of: Optional[date] = None
+    paid_by: Optional[str] = None
+    status: Optional[str] = None
+    notes: Optional[str] = None
+
+
+class LoanOut(LoanBase):
+    model_config = ConfigDict(from_attributes=True)
+    id: int
+    updated_at: Optional[datetime] = None
