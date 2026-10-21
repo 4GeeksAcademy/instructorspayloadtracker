@@ -37,13 +37,15 @@ from app.core.deps import (
 from app.models.models import (
     Assignment,
     AssignmentStatus,
+    CostCategory,
     CostEntry,
     CostLog,
+    InsightLog,
     CostPeriodState,
     PayPeriod,
     User,
 )
-from app.schemas.schemas import CostEntryCreate, CostEntryOut, CostEntryUpdate
+from app.schemas.schemas import CostBulkUpdate, CostCategoryCreate, CostEntryCreate, CostEntryOut, CostEntryUpdate
 
 router = APIRouter(prefix="/costs", tags=["costs"])
 
@@ -70,6 +72,37 @@ USA = "4Geeks USA"
 
 
 # ---------- helpers ----------
+
+def _sections(db: Session) -> list[tuple[str, str]]:
+    """Built-in sections + categories created in the app."""
+    custom = [(c.key, c.label) for c in db.query(CostCategory).order_by(CostCategory.created_at).all()]
+    out = list(SECTIONS)
+    out.insert(len(out) - 1, ("__custom__", ""))  # custom ones go before "Other"
+    i = out.index(("__custom__", ""))
+    return out[:i] + custom + out[i + 1:]
+
+
+def _section_labels(db: Session) -> dict:
+    return dict(_sections(db))
+
+
+def _check_section(db: Session, key: Optional[str]):
+    if key is None or key == "instructors_ref":
+        return
+    if key == "instructors" or key not in _section_labels(db):
+        raise HTTPException(status_code=400, detail=f"Unknown category: {key}")
+
+
+def _apply_paid_rules(e: CostEntry, data: dict):
+    """Status Pagado <-> paid date stay in sync unless a date is given explicitly."""
+    if "status" in data and "paid_date" not in data:
+        if data["status"] == "Pagado" and not e.paid_date:
+            e.paid_date = date.today()
+        elif data["status"] != "Pagado" and e.paid_date:
+            e.paid_date = None
+    if "paid_date" in data and data["paid_date"] and "status" not in data and e.status != "Pagado":
+        e.status = "Pagado"
+
 
 def _log(db, user, action, entry_id=None, period_id=None, details=None):
     db.add(CostLog(user_id=user.id if user else None, action=action, entry_id=entry_id,
@@ -175,9 +208,11 @@ def _key(e: CostEntry) -> str:
 # ---------- reference ----------
 
 @router.get("/meta")
-def meta(user: User = Depends(require_costs_view)):
+def meta(db: Session = Depends(get_db), user: User = Depends(require_costs_view)):
+    builtin = {k for k, _ in SECTIONS}
     return {
-        "sections": [{"key": k, "label": v} for k, v in SECTIONS if k != "instructors"],
+        "sections": [{"key": k, "label": v, "custom": k not in builtin}
+                     for k, v in _sections(db) if k != "instructors"],
         "statuses": STATUSES,
         "methods": METHODS,
         "divisions": DIVISIONS,
@@ -211,7 +246,10 @@ def create_entry(payload: CostEntryCreate, db: Session = Depends(get_db),
     if not db.query(PayPeriod.id).filter(PayPeriod.id == payload.period_id).first():
         raise HTTPException(status_code=400, detail="Invalid month")
     _check_editable(db, user, None, payload.period_id)
+    _check_section(db, payload.section)
     e = CostEntry(**payload.model_dump(), created_by=user.id, updated_by=user.id)
+    if e.status == "Pagado" and not e.paid_date:
+        e.paid_date = date.today()
     db.add(e)
     db.flush()
     _log(db, user, "created", e.id, e.period_id, f"{e.name}: {e.amount}")
@@ -230,12 +268,15 @@ def update_entry(entry_id: int, payload: CostEntryUpdate, db: Session = Depends(
     data = payload.model_dump(exclude_unset=True)
     if "period_id" in data:
         _check_editable(db, user, None, data["period_id"])
+    if "section" in data:
+        _check_section(db, data["section"])
     changes = []
     for k, v in data.items():
         old = getattr(e, k)
         if str(old) != str(v):
             changes.append(f"{k}: {old} → {v}")
         setattr(e, k, v)
+    _apply_paid_rules(e, data)
     if changes:
         e.is_projection = False if ("amount" in data or "status" in data) else e.is_projection
         e.updated_by = user.id
@@ -347,7 +388,13 @@ def copy_forward(period_id: int, replace: bool = False, db: Session = Depends(ge
         if e.section == "instructors_ref":
             continue
         status = e.status if e.status in ("Iberoamérica paga", "España paga", "Pausado") else "Pendiente"
-        db.add(CostEntry(
+        due = None
+        if e.due_date:
+            try:
+                due = e.due_date.replace(year=first.year, month=first.month)
+            except ValueError:
+                due = last
+        db.add(CostEntry(due_date=due,
             period_id=tgt.id, section=e.section, division=e.division, department=e.department,
             name=e.name, amount=e.target_amount if e.target_amount is not None else e.amount,
             status=status, method=e.method, frequency=e.frequency, paid_by=e.paid_by,
@@ -366,7 +413,7 @@ def copy_forward(period_id: int, replace: bool = False, db: Session = Depends(ge
 def summary(db: Session = Depends(get_db), _u: User = Depends(require_costs_view)):
     months = [_month_totals(db, p) for p in _periods(db)]
     months = [m for m in months if m["entry_count"] or m["by_section"].get("instructors")]
-    return {"months": months, "section_labels": SECTION_LABEL}
+    return {"months": months, "section_labels": _section_labels(db)}
 
 
 @router.get("/compare")
@@ -377,9 +424,10 @@ def compare(a: int, b: int, section: Optional[str] = None, db: Session = Depends
     if not pa or not pb:
         raise HTTPException(status_code=404, detail="Month not found")
     ta, tb = _month_totals(db, pa), _month_totals(db, pb)
+    labels = _section_labels(db)
     sections = sorted(set(ta["by_section"]) | set(tb["by_section"]))
     by_section = [{
-        "section": s, "label": SECTION_LABEL.get(s, s),
+        "section": s, "label": labels.get(s, s),
         "a": ta["by_section"].get(s, 0.0), "b": tb["by_section"].get(s, 0.0),
         "a_usa": ta["by_section_usa"].get(s, 0.0), "b_usa": tb["by_section_usa"].get(s, 0.0),
     } for s in sections]
@@ -509,8 +557,41 @@ def _rule_insights(f: dict) -> list[dict]:
     return out
 
 
+def _save_insight(db, user, result, period_id=None, entry=None):
+    db.add(InsightLog(period_id=period_id if entry is None else entry.period_id,
+                      entry_id=entry.id if entry else None, entry_name=entry.name if entry else None,
+                      scope="line" if entry else "month", source=result.get("source", "rules"),
+                      items=json.dumps(result.get("items", [])), user_id=user.id))
+    db.commit()
+
+
 @router.post("/insights")
-def insights(period_id: int, db: Session = Depends(get_db), _u: User = Depends(require_costs_view)):
+def insights(period_id: int, db: Session = Depends(get_db), user: User = Depends(require_costs_view)):
+    result = _month_insight(period_id, db)
+    _save_insight(db, user, result, period_id=period_id)
+    return result
+
+
+@router.get("/insights/history")
+def insight_history(period_id: Optional[int] = None, entry_id: Optional[int] = None, entry_name: Optional[str] = None,
+                    limit: int = 30, db: Session = Depends(get_db), _u: User = Depends(require_costs_view)):
+    q = db.query(InsightLog)
+    if entry_name:
+        q = q.filter(InsightLog.entry_name == entry_name)
+    elif entry_id:
+        q = q.filter(InsightLog.entry_id == entry_id)
+    else:
+        q = q.filter(InsightLog.scope == "month")
+        if period_id:
+            q = q.filter(InsightLog.period_id == period_id)
+    labels = {p.id: p.label for p in db.query(PayPeriod).all()}
+    return [{"id": r.id, "scope": r.scope, "source": r.source, "period": labels.get(r.period_id),
+             "period_id": r.period_id, "entry_name": r.entry_name, "user": r.user.name if r.user else None,
+             "at": r.created_at.isoformat() if r.created_at else None, "items": json.loads(r.items or "[]")}
+            for r in q.order_by(InsightLog.created_at.desc()).limit(min(limit, 100)).all()]
+
+
+def _month_insight(period_id: int, db: Session):
     p = db.query(PayPeriod).filter(PayPeriod.id == period_id).first()
     if not p:
         raise HTTPException(status_code=404, detail="Month not found")
@@ -658,39 +739,63 @@ def delete_loan(loan_id: int, db: Session = Depends(get_db), user: User = Depend
 
 
 @router.get("/loans/schedule")
-def loan_schedule(weeks: int = 16, start: Optional[date] = None, db: Session = Depends(get_db),
-                  _u: User = Depends(require_costs_view)):
+def loan_schedule(weeks: int = 16, start: Optional[date] = None, until: Optional[date] = None,
+                  group: str = "week", db: Session = Depends(get_db), _u: User = Depends(require_costs_view)):
     """
-    Week-by-week debit calendar (Monday-start weeks) for every active loan:
-    what leaves the account each week, per loan, plus the monthly equivalent.
+    Debit calendar for every loan: per week (Monday-start) or per month.
+    `until` overrides `weeks` (e.g. until=2027-12-31).
     """
     today = start or date.today()
     monday = today - timedelta(days=today.weekday())
-    end = monday + timedelta(days=7 * weeks - 1)
+    if until:
+        weeks = max(1, ((until - monday).days // 7) + 1)
+    weeks = min(weeks, 130)
+    end = until or (monday + timedelta(days=7 * weeks - 1))
+    if group == "month":
+        b0 = today.replace(day=1)
+        buckets = []
+        d = b0
+        while d <= end:
+            buckets.append(d)
+            d = (d + timedelta(days=32)).replace(day=1)
+        idx = lambda x: (x.year - b0.year) * 12 + x.month - b0.month  # noqa: E731
+        win_start = today
+    else:
+        buckets = [monday + timedelta(days=7 * i) for i in range(weeks)]
+        idx = lambda x: (x - monday).days // 7  # noqa: E731
+        win_start = monday
+    n = len(buckets)
     loans = db.query(Loan).all()
-    week_starts = [monday + timedelta(days=7 * i) for i in range(weeks)]
     rows = []
-    totals = [0.0] * weeks
+    totals = [0.0] * n
     for loan in loans:
-        cells = [0.0] * weeks
-        for d in _loan_due_dates(loan, monday, end):
-            i = (d - monday).days // 7
-            cells[i] += _f(loan.payment)
+        cells = [0.0] * n
+        last_due = None
+        for d in _loan_due_dates(loan, win_start, end):
+            i = idx(d)
+            if 0 <= i < n:
+                cells[i] += _f(loan.payment)
+                last_due = d
         for i, v in enumerate(cells):
             totals[i] += v
         per_month = _f(loan.payment) * (52 / 12 if loan.frequency == "weekly" else 1) if loan.status == "Active" else 0
         rows.append({"id": loan.id, "name": loan.name, "kind": loan.kind, "frequency": loan.frequency,
                      "payment": _f(loan.payment), "per_month": round(per_month, 2), "status": loan.status,
                      "end_date": loan.end_date.isoformat() if loan.end_date else None,
+                     "last_in_window": last_due.isoformat() if last_due else None,
                      "cells": [round(v, 2) for v in cells], "total": round(sum(cells), 2)})
     rows.sort(key=lambda r: -r["total"])
     active = [r for r in rows if r["status"] == "Active"]
+    span_weeks = max(((end - win_start).days + 1) / 7, 1)
     return {
-        "weeks": [w.isoformat() for w in week_starts],
+        "group": group,
+        "weeks": [w.isoformat() for w in buckets],   # bucket starts (weeks or months)
+        "until": end.isoformat(),
         "rows": rows,
         "totals": [round(v, 2) for v in totals],
+        "window_total": round(sum(totals), 2),
         "per_month_total": round(sum(r["per_month"] for r in active), 2),
-        "per_week_avg": round(sum(totals) / weeks, 2) if weeks else 0,
+        "per_week_avg": round(sum(totals) / span_weeks, 2),
         "ending_in_window": [r for r in active if r["end_date"] and r["end_date"] <= end.isoformat()],
         "kinds": LOAN_KINDS,
     }
@@ -728,7 +833,14 @@ _LINE_TIPS = {
 
 
 @router.post("/entries/{entry_id}/insight")
-def line_insight(entry_id: int, db: Session = Depends(get_db), _u: User = Depends(require_costs_view)):
+def line_insight(entry_id: int, db: Session = Depends(get_db), user: User = Depends(require_costs_view)):
+    result = _line_insight(entry_id, db)
+    e = db.query(CostEntry).filter(CostEntry.id == entry_id).first()
+    _save_insight(db, user, result, entry=e)
+    return result
+
+
+def _line_insight(entry_id: int, db: Session):
     e = db.query(CostEntry).filter(CostEntry.id == entry_id).first()
     if not e:
         raise HTTPException(status_code=404, detail="Line not found")
@@ -757,3 +869,81 @@ def line_insight(entry_id: int, db: Session = Depends(get_db), _u: User = Depend
     )
     items = _ask_claude(prompt)
     return {"source": "ai" if items else "rules", "items": items or rules, "history": history}
+
+
+# ---------- categories + bulk ----------
+
+@router.post("/categories")
+def create_category(payload: CostCategoryCreate, db: Session = Depends(get_db),
+                    user: User = Depends(require_costs_edit)):
+    import re as _re
+    label = payload.label.strip()
+    if any(l.lower() == label.lower() for _, l in _sections(db)):
+        raise HTTPException(status_code=400, detail="That category already exists")
+    base = "c_" + (_re.sub(r"[^a-z0-9]+", "_", label.lower()).strip("_")[:30] or "cat")
+    key, n = base, 2
+    while db.query(CostCategory).filter(CostCategory.key == key).first():
+        key, n = f"{base}_{n}", n + 1
+    db.add(CostCategory(key=key, label=label, created_by=user.id))
+    _log(db, user, "category_created", details=label)
+    db.commit()
+    return {"key": key, "label": label, "custom": True}
+
+
+@router.patch("/categories/{key}")
+def rename_category(key: str, payload: CostCategoryCreate, db: Session = Depends(get_db),
+                    user: User = Depends(require_costs_edit)):
+    c = db.query(CostCategory).filter(CostCategory.key == key).first()
+    if not c:
+        raise HTTPException(status_code=404, detail="Only categories created in the app can be renamed")
+    _log(db, user, "category_renamed", details=f"{c.label} → {payload.label.strip()}")
+    c.label = payload.label.strip()
+    db.commit()
+    return {"key": c.key, "label": c.label, "custom": True}
+
+
+@router.post("/entries/bulk")
+def bulk_update(payload: CostBulkUpdate, db: Session = Depends(get_db), user: User = Depends(require_costs_edit)):
+    if not payload.ids:
+        return {"updated": 0}
+    if payload.section:
+        _check_section(db, payload.section)
+    entries = db.query(CostEntry).filter(CostEntry.id.in_(payload.ids)).all()
+    for e in entries:
+        _check_editable(db, user, e, e.period_id)
+    today = date.today()
+    for e in entries:
+        changes = []
+        if payload.section and e.section != payload.section:
+            changes.append(f"section: {e.section} → {payload.section}")
+            e.section = payload.section
+        if payload.paid_by and e.paid_by != payload.paid_by:
+            changes.append(f"paid_by: {e.paid_by} → {payload.paid_by}")
+            e.paid_by = payload.paid_by
+        if payload.paid is True and e.status != "Pagado":
+            changes.append(f"status: {e.status} → Pagado")
+            e.status, e.paid_date = "Pagado", e.paid_date or today
+        elif payload.paid is False and e.status == "Pagado":
+            changes.append("status: Pagado → Pendiente")
+            e.status, e.paid_date = "Pendiente", None
+        elif payload.status and e.status != payload.status:
+            changes.append(f"status: {e.status} → {payload.status}")
+            _apply_paid_rules(e, {"status": payload.status})
+            e.status = payload.status
+        if changes:
+            e.updated_by = user.id
+            e.is_projection = False
+            _log(db, user, "edited", e.id, e.period_id, "; ".join(changes) + " (bulk)")
+    db.commit()
+    return {"updated": len(entries)}
+
+
+@router.get("/entries/{entry_id}/history")
+def line_history(entry_id: int, db: Session = Depends(get_db), _u: User = Depends(require_costs_view)):
+    """Amount of this line (same name) in every month."""
+    e = db.query(CostEntry).filter(CostEntry.id == entry_id).first()
+    if not e:
+        raise HTTPException(status_code=404, detail="Line not found")
+    rows = (db.query(CostEntry, PayPeriod).join(PayPeriod, PayPeriod.id == CostEntry.period_id)
+            .filter(CostEntry.name == e.name).order_by(PayPeriod.start_date).all())
+    return [{"month": p.label, "amount": _f(x.amount), "current": x.id == e.id} for x, p in rows]

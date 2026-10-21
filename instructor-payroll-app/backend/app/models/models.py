@@ -360,6 +360,8 @@ class CostEntry(Base):
     source = Column(String(40), nullable=True)            # payroll sheet | bank statement | estimate | manual
     is_projection = Column(Boolean, nullable=False, default=False)
     target_amount = Column(Numeric(12, 2), nullable=True)
+    due_date = Column(Date, nullable=True, index=True)     # when it's due this month
+    paid_date = Column(Date, nullable=True, index=True)    # when it was actually paid
 
     confirmed = Column(Boolean, nullable=False, default=False)
     confirmed_by = Column(Integer, ForeignKey("users.id"), nullable=True)
@@ -430,3 +432,30 @@ class Loan(Base):
     notes = Column(Text, nullable=True)
     updated_by = Column(Integer, ForeignKey("users.id"), nullable=True)
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+
+class CostCategory(Base):
+    """Categories created in the app, on top of the built-in sections."""
+    __tablename__ = "cost_categories"
+
+    key = Column(String(40), primary_key=True)
+    label = Column(String(80), nullable=False)
+    created_by = Column(Integer, ForeignKey("users.id"), nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+
+class InsightLog(Base):
+    """Every advice request (month or single line), so past advice can be reviewed."""
+    __tablename__ = "insight_log"
+
+    id = Column(Integer, primary_key=True)
+    period_id = Column(Integer, ForeignKey("pay_periods.id"), nullable=True, index=True)
+    entry_id = Column(Integer, nullable=True, index=True)
+    entry_name = Column(String(200), nullable=True)
+    scope = Column(String(10), nullable=False, default="month")   # month | line
+    source = Column(String(10), nullable=False, default="rules")  # ai | rules
+    items = Column(Text, nullable=False)                          # JSON list of {title, detail}
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+    user = relationship("User")

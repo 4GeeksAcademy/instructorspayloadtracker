@@ -15,4 +15,6 @@ from app.models.models import (  # noqa: F401
     CostLog,
     CostPeriodState,
     Loan,
+    CostCategory,
+    InsightLog,
 )

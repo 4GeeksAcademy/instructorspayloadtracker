@@ -328,6 +328,8 @@ class CostEntryBase(BaseModel):
     notes: Optional[str] = None
     source: Optional[str] = "manual"
     target_amount: Optional[Decimal] = None
+    due_date: Optional[date] = None
+    paid_date: Optional[date] = None
 
 
 class CostEntryCreate(CostEntryBase):
@@ -348,7 +350,21 @@ class CostEntryUpdate(BaseModel):
     notes: Optional[str] = None
     source: Optional[str] = None
     target_amount: Optional[Decimal] = None
+    due_date: Optional[date] = None
+    paid_date: Optional[date] = None
     period_id: Optional[int] = None
+
+
+class CostBulkUpdate(BaseModel):
+    ids: list[int]
+    section: Optional[str] = None
+    status: Optional[str] = None
+    paid: Optional[bool] = None          # True: Pagado + paid today; False: back to Pendiente
+    paid_by: Optional[str] = None
+
+
+class CostCategoryCreate(BaseModel):
+    label: str = Field(min_length=2, max_length=80)
 
 
 class CostEntryOut(CostEntryBase):
