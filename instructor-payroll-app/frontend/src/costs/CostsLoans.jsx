@@ -11,6 +11,13 @@ const BLANK = {
 };
 const fmtDate = (d) => (d ? new Date(d + "T00:00").toLocaleDateString("en-US", { month: "short", day: "numeric", year: "2-digit" }) : "—");
 const wk = (d) => new Date(d + "T00:00").toLocaleDateString("en-US", { month: "short", day: "numeric" });
+const mo = (d) => new Date(d + "T00:00").toLocaleDateString("en-US", { month: "short", year: "2-digit" });
+const RANGES = [
+  { key: "8", label: "8 weeks", q: "weeks=8" },
+  { key: "12", label: "12 weeks", q: "weeks=12" },
+  { key: "26", label: "6 months", q: "weeks=26" },
+  { key: "2027", label: "To Dec 2027", q: "until=2027-12-31" },
+];
 
 function LoanForm({ initial, kinds, onSave, onCancel, saving }) {
   const [d, setD] = useState(initial);
@@ -60,22 +67,29 @@ export default function CostsLoans() {
   const [meta, setMeta] = useState(null);
   const [loans, setLoans] = useState([]);
   const [sched, setSched] = useState(null);
-  const [weeks, setWeeks] = useState(12);
+  const [range, setRange] = useState("12");
+  const [group, setGroup] = useState("week");
+  const [next4, setNext4] = useState(null);
   const [editing, setEditing] = useState(null);
   const [saving, setSaving] = useState(false);
   const [msg, setMsg] = useState("");
 
   const load = () =>
-    Promise.all([client.get("/costs/loans"), client.get(`/costs/loans/schedule?weeks=${weeks}`)]).then(([l, s]) => {
+    Promise.all([
+      client.get("/costs/loans"),
+      client.get(`/costs/loans/schedule?${RANGES.find((r) => r.key === range).q}&group=${group}`),
+      client.get("/costs/loans/schedule?weeks=4"),
+    ]).then(([l, s, n]) => {
       setLoans(l.data);
       setSched(s.data);
+      setNext4(n.data);
     });
   useEffect(() => {
     client.get("/costs/meta").then((r) => setMeta(r.data));
   }, []);
   useEffect(() => {
     load();
-  }, [weeks]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [range, group]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const save = async (payload) => {
     setSaving(true);
@@ -99,7 +113,10 @@ export default function CostsLoans() {
 
   if (!sched || !meta) return <div className="empty-state">Loading…</div>;
   const canEdit = meta.can_edit;
-  const next4 = sched.totals.slice(0, 4).reduce((a, b) => a + b, 0);
+  const next4Total = next4 ? next4.totals.reduce((a, b) => a + b, 0) : 0;
+  const byMonth = sched.group === "month";
+  const colLabel = byMonth ? mo : wk;
+  const rangeLabel = RANGES.find((r) => r.key === range).label;
   const peak = Math.max(...sched.totals);
   const peakIdx = sched.totals.indexOf(peak);
   const balance = loans.filter((l) => l.status === "Active").reduce((s, l) => s + Number(l.balance_remaining || 0), 0);
@@ -115,7 +132,14 @@ export default function CostsLoans() {
         </div>
         <div className="page-head-tools">
           <div className="seg">
-            {[8, 12, 26].map((w) => <button key={w} className={weeks === w ? "on" : ""} onClick={() => setWeeks(w)}>{w} weeks</button>)}
+            {RANGES.map((r) => (
+              <button key={r.key} className={range === r.key ? "on" : ""}
+                      onClick={() => { setRange(r.key); if (r.key === "2027") setGroup("month"); }}>{r.label}</button>
+            ))}
+          </div>
+          <div className="seg">
+            <button className={group === "week" ? "on" : ""} onClick={() => setGroup("week")}>By week</button>
+            <button className={group === "month" ? "on" : ""} onClick={() => setGroup("month")}>By month</button>
           </div>
           {canEdit && !editing && <button className="primary" onClick={() => setEditing({ ...BLANK })}>+ Add loan</button>}
         </div>
@@ -123,9 +147,9 @@ export default function CostsLoans() {
 
       <div className="grid cols-4">
         <StatCard tone="amber" label="Per month (all loans)" value={money(sched.per_month_total)} sub="weekly × 52 / 12 + monthly" />
-        <StatCard tone="blue" label="Next 4 weeks" value={money(next4)} sub={`${money(sched.per_week_avg)} / week average over ${weeks} weeks`} />
-        <StatCard tone="red" label="Heaviest week" value={money(peak)} sub={`Week of ${wk(sched.weeks[peakIdx])}`} />
-        <StatCard tone="gray" label="Known balance left" value={money(balance)} sub="where a balance is entered" />
+        <StatCard tone="blue" label="Next 4 weeks" value={money(next4Total)} sub={`${money(sched.per_week_avg)} / week on average (${rangeLabel.toLowerCase()})`} />
+        <StatCard tone="red" label={byMonth ? "Heaviest month" : "Heaviest week"} value={money(peak)} sub={byMonth ? mo(sched.weeks[peakIdx]) : `Week of ${wk(sched.weeks[peakIdx])}`} />
+        <StatCard tone="gray" label={`Total out · ${rangeLabel.toLowerCase()}`} value={money(sched.window_total)} sub={`through ${fmtDate(sched.until)} · known balances ${money(balance)}`} />
       </div>
 
       {msg && <div className="banner">{msg}</div>}
@@ -133,22 +157,22 @@ export default function CostsLoans() {
 
       <div className="card">
         <div className="card-head">
-          <h3>Week by week</h3>
-          <span className="small-muted">Weeks start Monday · darker = bigger debit</span>
+          <h3>{byMonth ? "Month by month" : "Week by week"}</h3>
+          <span className="small-muted">{byMonth ? "Each payment counted in the month it's debited" : "Weeks start Monday"} · darker = bigger debit</span>
         </div>
         <div className="table-scroll">
           <table className="week-table">
             <thead>
               <tr>
-                <th>Loan</th>
-                {sched.weeks.map((w) => <th key={w} className="num">{wk(w)}</th>)}
+                <th className="sticky-col">Loan</th>
+                {sched.weeks.map((w) => <th key={w} className="num">{colLabel(w)}</th>)}
                 <th className="num">Total</th>
               </tr>
             </thead>
             <tbody>
               {visibleRows.map((r) => (
                 <tr key={r.id}>
-                  <td className="loan-name">{r.name}<div className="small-muted">{money(r.payment)} / {r.frequency === "weekly" ? "week" : "month"}</div></td>
+                  <td className="loan-name sticky-col">{r.name}<div className="small-muted">{money(r.payment)} / {r.frequency === "weekly" ? "week" : "month"}</div></td>
                   {r.cells.map((v, i) => (
                     <td key={i} className="num heat" style={v ? { background: `rgba(35,129,255,${0.12 + 0.55 * (v / maxCell)})`, color: v / maxCell > 0.6 ? "#fff" : "var(--ink)" } : undefined}>
                       {v ? money(v) : ""}
@@ -160,7 +184,7 @@ export default function CostsLoans() {
             </tbody>
             <tfoot>
               <tr className="total-row">
-                <td>Total out</td>
+                <td className="sticky-col">Total out</td>
                 {sched.totals.map((v, i) => <td key={i} className={`num${i === peakIdx ? " txt-up" : ""}`}>{money(v)}</td>)}
                 <td className="num">{money(sched.totals.reduce((a, b) => a + b, 0))}</td>
               </tr>

@@ -11,6 +11,10 @@ export default function CostsDashboard() {
   const [adjust, setAdjust] = useState(null);
   const [loans, setLoans] = useState(null);
   const [view, setView] = useState("usa");
+  const [summary, setSummary] = useState(null);
+  useEffect(() => {
+    client.get("/costs/summary").then((r) => setSummary(r.data)).catch(() => setSummary(null));
+  }, [periods]);
 
   useEffect(() => {
     if (!periodId) return;
@@ -25,15 +29,6 @@ export default function CostsDashboard() {
   if (!period) return <div className="empty-state">No months yet.</div>;
 
   const months = [...periods].filter((p) => p.entry_count > 0).reverse();
-  const bySec = view === "usa" ? period.by_section_usa : period.by_section;
-  const prevSec = previous ? (view === "usa" ? previous.by_section_usa : previous.by_section) : {};
-  const rows = SECTION_ORDER.filter((k) => (bySec[k] || 0) !== 0 || (prevSec[k] || 0) !== 0).map((k) => ({
-    key: k,
-    label: sectionLabel[k] || k,
-    value: bySec[k] || 0,
-    prev: prevSec[k] || 0,
-  }));
-  const max = Math.max(...rows.map((r) => Math.abs(r.value)), 1);
   const delta = previous ? period.net_usa - previous.net_usa : 0;
   const deltaPct = previous ? pct(previous.net_usa, period.net_usa) : null;
   const paidBy = Object.entries(period.by_paid_by || {})
@@ -124,40 +119,17 @@ export default function CostsDashboard() {
         </div>
       </div>
 
-      <div className="grid dash-2">
-        <div className="card">
-          <div className="card-head">
-            <h3>By category</h3>
-            <div className="seg">
-              <button className={view === "usa" ? "on" : ""} onClick={() => setView("usa")}>Net USA</button>
-              <button className={view === "gross" ? "on" : ""} onClick={() => setView("gross")}>Gross</button>
-            </div>
-          </div>
-          {rows.map((r) => {
-            const d = r.value - r.prev;
-            return (
-              <div className="bar-row cat-row" key={r.key}>
-                <div className="bar-label" title={r.label}>{r.label}</div>
-                <div className="bar-track">
-                  <div className={`bar-fill${r.value < 0 ? " neg" : ""}`} style={{ width: `${Math.max((Math.abs(r.value) / max) * 100, r.value ? 2 : 0)}%` }} />
-                </div>
-                <div>
-                  <div className="bar-value">{money(r.value)}</div>
-                  {previous && Math.abs(d) >= 1 && (
-                    <div className={`bar-sub ${d > 0 ? "txt-up" : "txt-down"}`}>{signed(d)}</div>
-                  )}
-                </div>
-              </div>
-            );
-          })}
-          <p className="hint">Instructors come from the Instructors section (approved hours). Reimbursements from Spain/LATAM show as negatives.</p>
-        </div>
+      <CategoryShare period={period} previous={previous} summary={summary} view={view} setView={setView} sectionLabel={sectionLabel} />
+
+      <div className="grid dash-even">
         <div className="card">
           <h3>Who pays this month</h3>
           <SplitBar parts={paidBy} />
+        </div>
+        <div className="card">
           {loans && (
             <>
-              <div className="card-head" style={{ marginTop: 26 }}>
+              <div className="card-head">
                 <h3>Loans — next 4 weeks</h3>
                 <Link to="/costs/loans" className="small-link">Loans →</Link>
               </div>
@@ -174,5 +146,96 @@ export default function CostsDashboard() {
         </div>
       </div>
     </>
+  );
+}
+
+
+// How much each category is this month and over the year so far, and its share of the total.
+function CategoryShare({ period, previous, summary, view, setView, sectionLabel }) {
+  const key = view === "usa" ? "by_section_usa" : "by_section";
+  const totalKey = view === "usa" ? "net_usa" : "gross";
+  const year = period.start_date.slice(0, 4);
+  const months = (summary?.months || []).filter((m) => m.start_date.slice(0, 4) === year && m.start_date <= period.start_date);
+  const monthTotal = period[totalKey] || 0;
+  const yearTotal = months.reduce((s, m) => s + (m[totalKey] || 0), 0);
+  const keys = [...new Set([...SECTION_ORDER, ...Object.keys(period[key] || {}), ...months.flatMap((m) => Object.keys(m[key] || {}))])];
+  const rows = keys
+    .map((k) => {
+      const yr = months.reduce((s, m) => s + ((m[key] || {})[k] || 0), 0);
+      return {
+        key: k,
+        label: sectionLabel[k] || k,
+        month: (period[key] || {})[k] || 0,
+        prev: previous ? (previous[key] || {})[k] || 0 : null,
+        year: yr,
+        avg: months.length ? yr / months.length : 0,
+      };
+    })
+    .filter((r) => r.month || r.year)
+    .sort((a, b) => b.month - a.month);
+  const max = Math.max(...rows.map((r) => Math.abs(r.month)), 1);
+  const share = (v, t) => (t ? `${((v / t) * 100).toFixed(1)}%` : "—");
+  const first = months[0]?.label?.split(" ")[0]?.slice(0, 3);
+  const last = period.label.split(" ")[0].slice(0, 3);
+
+  return (
+    <div className="card" style={{ marginTop: 16 }}>
+      <div className="card-head">
+        <div>
+          <h3>Categories — month and year</h3>
+          <div className="small-muted">
+            How much each category is, and its share of the total. Year = {first && first !== last ? `${first}–${last}` : last} {year} ({months.length} month{months.length === 1 ? "" : "s"} with data).
+          </div>
+        </div>
+        <div className="seg">
+          <button className={view === "usa" ? "on" : ""} onClick={() => setView("usa")}>Net USA</button>
+          <button className={view === "gross" ? "on" : ""} onClick={() => setView("gross")}>Gross</button>
+        </div>
+      </div>
+      <div className="table-scroll">
+        <table className="cmp-table share-table">
+          <thead>
+            <tr>
+              <th>Category</th>
+              <th style={{ width: "22%" }} />
+              <th className="num">{period.label.split(" ")[0]}</th>
+              <th className="num">% of month</th>
+              {previous && <th className="num">vs {previous.label.split(" ")[0].slice(0, 3)}</th>}
+              <th className="num">Year so far</th>
+              <th className="num">% of year</th>
+              <th className="num">Avg / month</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((r) => {
+              const d = r.prev == null ? 0 : r.month - r.prev;
+              return (
+                <tr key={r.key}>
+                  <td>{r.label}</td>
+                  <td><div className="bar-track"><div className={`bar-fill${r.month < 0 ? " neg" : ""}`} style={{ width: `${Math.max((Math.abs(r.month) / max) * 100, r.month ? 2 : 0)}%` }} /></div></td>
+                  <td className="num strong">{money(r.month)}</td>
+                  <td className="num">{share(r.month, monthTotal)}</td>
+                  {previous && <td className={`num ${d > 0.5 ? "txt-up" : d < -0.5 ? "txt-down" : "muted-cell"}`}>{Math.abs(d) < 0.5 ? "—" : signed(d)}</td>}
+                  <td className="num">{money(r.year)}</td>
+                  <td className="num">{share(r.year, yearTotal)}</td>
+                  <td className="num muted-cell">{money(r.avg)}</td>
+                </tr>
+              );
+            })}
+            <tr className="total-row">
+              <td>Total</td>
+              <td />
+              <td className="num">{money(monthTotal)}</td>
+              <td className="num">100%</td>
+              {previous && <td className="num">{signed(monthTotal - (previous[totalKey] || 0))}</td>}
+              <td className="num">{money(yearTotal)}</td>
+              <td className="num">100%</td>
+              <td className="num">{money(months.length ? yearTotal / months.length : 0)}</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+      <p className="hint">Instructors come from the Instructors section. Reimbursements from Spain/LATAM are negative, so they lower the total.</p>
+    </div>
   );
 }

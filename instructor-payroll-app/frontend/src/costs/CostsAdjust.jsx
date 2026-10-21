@@ -27,6 +27,8 @@ function TargetCell({ line, canEdit, onSaved }) {
   );
 }
 
+const fmtAt = (t) => (t ? new Date(t).toLocaleString("en-US", { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }) : "");
+
 export default function CostsAdjust() {
   const { meta, periods, period, periodId, setPeriodId, loading, error, sectionLabel } = useCosts();
   const [data, setData] = useState(null);
@@ -36,15 +38,24 @@ export default function CostsAdjust() {
   const [aiErr, setAiErr] = useState("");
   const [insightFor, setInsightFor] = useState(null);
   const [showAll, setShowAll] = useState(false);
+  const [past, setPast] = useState([]);
+  const [openPast, setOpenPast] = useState(null);
 
   const load = () => {
     if (!periodId) return;
     client.get(`/costs/adjust?period_id=${periodId}`).then((r) => setData(r.data));
     client.get(`/costs/entries?period_id=${periodId}`).then((r) => setEntries(r.data));
   };
+  const loadPast = (showLatest) =>
+    periodId &&
+    client.get(`/costs/insights/history?period_id=${periodId}`).then((r) => {
+      setPast(r.data);
+      if (showLatest && r.data.length) setAi({ ...r.data[0], saved: true });
+    });
   useEffect(() => {
     setAi(null);
     load();
+    loadPast(true);
   }, [periodId]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const askAi = async () => {
@@ -53,6 +64,7 @@ export default function CostsAdjust() {
     try {
       const r = await client.post(`/costs/insights?period_id=${periodId}`);
       setAi(r.data);
+      loadPast(false);
     } catch (e) {
       setAiErr(errText(e));
     } finally {
@@ -113,7 +125,27 @@ export default function CostsAdjust() {
             ))}
           </ol>
         )}
+        {ai?.saved && <p className="hint">Saved advice from {fmtAt(ai.at)} · asked by {ai.user} · {ai.source === "ai" ? "AI" : "rule-based"}. "Ask again" gets a fresh one.</p>}
         {ai?.error && <p className="hint">{ai.error} — showing rule-based checks.</p>}
+        {past.length > 0 && (
+          <details className="past-advice">
+            <summary>Advice history for {period?.label} ({past.length})</summary>
+            <ul className="hist-list">
+              {past.map((p) => (
+                <li key={p.id}>
+                  <button className="linklike" onClick={() => setOpenPast(openPast === p.id ? null : p.id)}>
+                    {fmtAt(p.at)} · {p.user} · {p.source === "ai" ? "AI" : "Rules"} · {p.items.length} points
+                  </button>
+                  {openPast === p.id && (
+                    <ol className="insight-list" style={{ marginTop: 8 }}>
+                      {p.items.map((it, i) => <li key={i}><strong>{it.title}</strong><p>{it.detail}</p></li>)}
+                    </ol>
+                  )}
+                </li>
+              ))}
+            </ul>
+          </details>
+        )}
       </div>
 
       {data && (

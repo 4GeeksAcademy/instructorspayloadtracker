@@ -459,6 +459,17 @@ def seed_costs(db) -> int:
                 source="projection", is_projection=True,
             )); created += 1
     db.flush()
+    if created:
+        from app.core.migrate import due_from_frequency
+        from app.models.models import PayPeriod
+        starts = {p.id: p.start_date for p in db.query(PayPeriod).all()}
+        for e in db.query(CostEntry).filter(CostEntry.due_date.is_(None)).all():
+            d = due_from_frequency(e.frequency, starts.get(e.period_id))
+            if d:
+                e.due_date = d
+                if e.status == "Pagado":
+                    e.paid_date = d
+        db.flush()
     return created
 
 
