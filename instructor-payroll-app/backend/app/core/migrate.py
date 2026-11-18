@@ -16,6 +16,11 @@ STATEMENTS = [
     "ALTER TABLE users ADD COLUMN IF NOT EXISTS instructors_access BOOLEAN NOT NULL DEFAULT TRUE",
     "ALTER TABLE users ADD COLUMN IF NOT EXISTS costs_access VARCHAR(20) NOT NULL DEFAULT 'none'",
     "ALTER TABLE users ADD COLUMN IF NOT EXISTS view_all BOOLEAN NOT NULL DEFAULT FALSE",
+    "ALTER TABLE assignments ADD COLUMN IF NOT EXISTS created_by INTEGER REFERENCES users(id)",
+    # Backfill who entered each existing row from its "created" audit entry.
+    "UPDATE assignments a SET created_by = l.user_id FROM audit_log l "
+    "WHERE a.created_by IS NULL AND l.assignment_id = a.id AND l.action = 'created'",
+    "UPDATE assignments SET created_by = submitted_by WHERE created_by IS NULL AND submitted_by IS NOT NULL",
 ]
 
 _DAY = re.compile(r"^\s*(\d{1,2})\s+de\s+cada\s+mes", re.I)

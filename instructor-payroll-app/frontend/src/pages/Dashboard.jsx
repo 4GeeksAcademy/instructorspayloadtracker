@@ -117,6 +117,25 @@ export default function Dashboard() {
   }, [load]);
 
   const grandTotal = byPerson.reduce((sum, p) => sum + p.total_amount, 0);
+  // Real payment status per person, from the rows themselves.
+  const payOf = (personId) => {
+    const items = assignments.filter((a) => a.person.id === personId);
+    const sum = (sts) => items.filter((a) => sts.includes(a.status)).reduce((s, a) => s + a.total_amount, 0);
+    const paid = sum(["paid"]);
+    const left = sum(["approved", "registered"]);
+    const waiting = sum(["submitted", "admin_reviewed"]);
+    const entering = sum(["draft", "rejected"]);
+    let pill = ["draft", "Being entered"];
+    if (items.length && items.every((a) => a.status === "paid")) pill = ["paid", "Paid in full"];
+    else if (paid && (left || waiting || entering)) pill = ["registered", "Partly paid"];
+    else if (left) pill = [items.some((a) => a.status === "registered") ? "registered" : "approved", "Approved — to pay"];
+    else if (waiting) pill = ["submitted", "Waiting approval"];
+    return { paid, left, pending: waiting + entering, pill };
+  };
+  const totalPaid = assignments.filter((a) => a.status === "paid").reduce((s, a) => s + a.total_amount, 0);
+  const totalLeft = assignments
+    .filter((a) => ["approved", "registered"].includes(a.status))
+    .reduce((s, a) => s + a.total_amount, 0);
   const grandHours = byPerson.reduce((sum, p) => sum + p.total_hours, 0);
   const maxProgram = Math.max(1, ...byProgram.map((p) => p.total_amount));
   const maxCategory = Math.max(1, ...byCategory.map((c) => c.total_amount));
@@ -156,7 +175,12 @@ export default function Dashboard() {
       )}
 
       <div className="grid cols-4" style={{ marginBottom: 28 }}>
-        <StatCard tone="blue" label="Total to pay" value={money(grandTotal)} sub={`${byPerson.length} people`} />
+        <StatCard
+          tone="blue"
+          label="Total this month"
+          value={money(grandTotal)}
+          sub={`${byPerson.length} people · paid ${money(totalPaid)} · left ${money(totalLeft)}`}
+        />
         <StatCard tone="amber" label="Total hours logged" value={hrs(grandHours)} />
         <StatCard
           tone="cream"
@@ -295,10 +319,13 @@ export default function Dashboard() {
               <th># Assignments</th>
               <th>Total hours</th>
               <th>Total amount</th>
+              <th>Paid</th>
+              <th>Left to pay</th>
+              <th>Status</th>
             </tr>
           </thead>
           <tbody>
-            {byPerson.map((p) => (
+            {byPerson.map((p) => { const pay = payOf(p.person_id); return (
               <Fragment key={p.person_id}>
                 <tr
                   style={{ cursor: "pointer" }}
@@ -311,10 +338,16 @@ export default function Dashboard() {
                   <td>{p.assignment_count}</td>
                   <td>{p.total_hours.toFixed(2)}</td>
                   <td style={{ fontWeight: 700 }}>{money(p.total_amount)}</td>
+                  <td>{pay.paid ? <strong className="txt-green">{money(pay.paid)}</strong> : <span className="small-muted">—</span>}</td>
+                  <td>
+                    {pay.left ? <strong>{money(pay.left)}</strong> : <span className="small-muted">$0.00</span>}
+                    {pay.pending > 0 && <div className="small-muted">+ {money(pay.pending)} not approved yet</div>}
+                  </td>
+                  <td><span className={`pill ${pay.pill[0]}`}>{pay.pill[1]}</span></td>
                 </tr>
                 {expandedPerson === p.person_id && (
                   <tr>
-                    <td colSpan={5} style={{ background: "var(--bg-gray)", padding: 0 }}>
+                    <td colSpan={8} style={{ background: "var(--bg-gray)", padding: 0 }}>
                       <table style={{ margin: "8px 0" }}>
                         <thead>
                           <tr>
@@ -353,7 +386,7 @@ export default function Dashboard() {
                   </tr>
                 )}
               </Fragment>
-            ))}
+            ); })}
           </tbody>
         </table>
       </div>

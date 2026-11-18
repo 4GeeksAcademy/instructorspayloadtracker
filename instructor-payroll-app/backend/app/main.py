@@ -4,7 +4,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.core.config import settings
 from app.core.database import Base, engine
 from app.core.migrate import run_migrations
-from app.routers import assignments, auth, costs, enrollment, reference, revenue, users
+from app.routers import assignments, auth, corrections, costs, enrollment, reference, revenue, users
 
 # For a real production rollout, prefer Alembic migrations over create_all.
 # create_all is kept here so the app also boots cleanly from a fresh DB
@@ -25,6 +25,7 @@ app.add_middleware(
 app.include_router(auth.router)
 app.include_router(reference.router)
 app.include_router(assignments.router)
+app.include_router(corrections.router)
 app.include_router(enrollment.router)
 app.include_router(revenue.router)
 app.include_router(users.router)

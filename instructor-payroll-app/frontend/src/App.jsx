@@ -4,7 +4,7 @@ import Login from "./pages/Login.jsx";
 import Dashboard from "./pages/Dashboard.jsx";
 import SubmitHours from "./pages/SubmitHours.jsx";
 import ReviewQueue from "./pages/ReviewQueue.jsx";
-import ApprovalQueue from "./pages/ApprovalQueue.jsx";
+import Overview from "./pages/Overview.jsx";
 import Revenue from "./pages/Revenue.jsx";
 import Payments from "./pages/Payments.jsx";
 import Settings from "./pages/Settings.jsx";
@@ -80,15 +80,11 @@ function Shell() {
           </div>
         ) : canInstructors(user) ? (
         <div className="nav">
-          <NavLink to="/" end>Dashboard</NavLink>
-          <NavLink to="/submit">Submit Hours</NavLink>
-          {(user.role === "admin" || user.role === "owner") && (
-            <NavLink to="/review">Admin Review</NavLink>
-          )}
-          {user.role === "owner" && <NavLink to="/approve">Final Approval</NavLink>}
-          {(user.role === "admin" || user.role === "owner") && (
-            <NavLink to="/payments">Payments</NavLink>
-          )}
+          <NavLink to="/" end>Overview</NavLink>
+          <NavLink to="/dashboard">Dashboard</NavLink>
+          <NavLink to="/submit">{user.role === "program_lead" ? "My hours" : "Enter hours"}</NavLink>
+          {(user.role === "admin" || user.role === "owner") && <NavLink to="/review">Approvals</NavLink>}
+          {(user.role === "admin" || user.role === "owner") && <NavLink to="/payments">Payments</NavLink>}
           {(user.role === "admin" || user.role === "owner") && (
             <NavLink to="/revenue">{user.role === "owner" || user.view_all ? "Revenue" : "Students"}</NavLink>
           )}
@@ -96,7 +92,7 @@ function Shell() {
         ) : <div className="nav" />}
         <div className="user-chip">
           <span>
-            {user.name} <span className="small-muted">({user.role.replace("_", " ")})</span>
+            {user.name} <span className="small-muted">({{ owner: "super admin", admin: "approvals & payments", program_lead: "program lead" }[user.role] || user.role})</span>
           </span>
           <NavLink to="/settings" className={({ isActive }) => (isActive ? "active" : undefined)}>
             Settings
@@ -106,10 +102,11 @@ function Shell() {
       </div>
       <div className="container">
         <Routes>
-          <Route path="/" element={<RequireInstructors><Dashboard /></RequireInstructors>} />
+          <Route path="/" element={<RequireInstructors><Overview /></RequireInstructors>} />
+          <Route path="/dashboard" element={<RequireInstructors><Dashboard /></RequireInstructors>} />
           <Route path="/submit" element={<RequireInstructors><SubmitHours /></RequireInstructors>} />
-          <Route path="/review" element={<RequireInstructors><ReviewQueue /></RequireInstructors>} />
-          <Route path="/approve" element={<RequireInstructors><ApprovalQueue /></RequireInstructors>} />
+          <Route path="/review" element={<RequireInstructors><RequireAdminOrOwner><ReviewQueue /></RequireAdminOrOwner></RequireInstructors>} />
+          <Route path="/approve" element={<Navigate to="/review" replace />} />
           <Route path="/costs" element={<RequireCosts><CostsDashboard /></RequireCosts>} />
           <Route path="/costs/entries" element={<RequireCosts><CostsEntries /></RequireCosts>} />
           <Route path="/costs/loans" element={<RequireCosts><CostsLoans /></RequireCosts>} />
@@ -118,9 +115,11 @@ function Shell() {
           <Route
             path="/payments"
             element={
-              <RequireAdminOrOwner>
-                <Payments />
-              </RequireAdminOrOwner>
+              <RequireInstructors>
+                <RequireAdminOrOwner>
+                  <Payments />
+                </RequireAdminOrOwner>
+              </RequireInstructors>
             }
           />
           <Route

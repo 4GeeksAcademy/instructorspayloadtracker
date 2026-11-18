@@ -43,9 +43,9 @@ from app.core.database import Base
 
 
 class UserRole(str, enum.Enum):
-    program_lead = "program_lead"   # submits hours for their program (e.g. Marco, Valentina)
-    admin = "admin"                  # financial/academic review
-    owner = "owner"                  # final approval (Marcelo)
+    program_lead = "program_lead"   # sets the numbers; sees and edits only their own data (Loreto, Diego)
+    admin = "admin"                  # sees everything, approves and pays (Kevin)
+    owner = "owner"                  # super admin: everything an admin can do + manage users/people (Marcelo)
 
 
 class WorkCategory(str, enum.Enum):
@@ -255,6 +255,7 @@ class Assignment(Base):
 
     status = Column(Enum(AssignmentStatus), nullable=False, default=AssignmentStatus.draft)
 
+    created_by = Column(Integer, ForeignKey("users.id"), nullable=True)   # who entered the row
     submitted_by = Column(Integer, ForeignKey("users.id"), nullable=True)
     submitted_at = Column(DateTime(timezone=True), nullable=True)
     reviewed_by = Column(Integer, ForeignKey("users.id"), nullable=True)
@@ -289,6 +290,19 @@ class Assignment(Base):
         return out
 
     @property
+    def history(self) -> list[dict]:
+        """Full trail for this row (created, edits, approvals, payments, corrections)."""
+        return [
+            {
+                "action": e.action,
+                "details": e.details,
+                "user": e.user.name if e.user else None,
+                "at": e.created_at,
+            }
+            for e in (self.audit_entries or [])
+        ]
+
+    @property
     def rejection_reason(self) -> str | None:
         """Latest reason given when this item was sent back, if it's currently rejected."""
         if self.status != AssignmentStatus.rejected:
@@ -318,6 +332,45 @@ class AuditLog(Base):
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
     user = relationship("User", viewonly=True)
+
+
+class Correction(Base):
+    """
+    A note, correction or payment difference raised on a pay row at ANY
+    stage -- including after it was paid. The original row stays as the
+    record of what happened; the correction says what should change:
+
+    - amount == 0: a note only (nothing to pay or deduct).
+    - amount > 0: we still owe this person the difference.
+    - amount < 0: we overpaid; deduct it from a future payment.
+
+    Lifecycle: open -> approved -> registered -> paid (paid = settled; for a
+    negative amount that means the deduction was applied), or rejected.
+    Notes (amount 0) go straight to "noted" and never enter Payments.
+    """
+    __tablename__ = "corrections"
+
+    id = Column(Integer, primary_key=True)
+    assignment_id = Column(Integer, ForeignKey("assignments.id"), nullable=False, index=True)
+    period_id = Column(Integer, ForeignKey("pay_periods.id"), nullable=False, index=True)
+    person_id = Column(Integer, ForeignKey("people.id"), nullable=False, index=True)
+
+    amount = Column(Numeric(10, 2), nullable=False, default=0)
+    note = Column(Text, nullable=False)
+    status = Column(String(20), nullable=False, default="open")   # noted | open | approved | registered | paid | rejected
+    resolution = Column(Text, nullable=True)                        # reason when rejected
+
+    created_by = Column(Integer, ForeignKey("users.id"), nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    approved_by = Column(Integer, ForeignKey("users.id"), nullable=True)
+    approved_at = Column(DateTime(timezone=True), nullable=True)
+    paid_by = Column(Integer, ForeignKey("users.id"), nullable=True)
+    paid_at = Column(DateTime(timezone=True), nullable=True)
+
+    assignment = relationship("Assignment")
+    person = relationship("Person")
+    period = relationship("PayPeriod")
+    author = relationship("User", foreign_keys=[created_by], viewonly=True)
 
 
 class CostEntry(Base):

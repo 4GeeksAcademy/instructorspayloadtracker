@@ -2,9 +2,19 @@ import { useEffect, useState, useCallback, Fragment } from "react";
 import client from "../api/client";
 import PeriodSelector from "../components/PeriodSelector.jsx";
 import StatCard from "../components/StatCard.jsx";
+import RowDrawer, { signed } from "../components/RowDrawer.jsx";
+import { currentPeriod } from "../api/periods.js";
 
-const money = (v) =>
-  `$${Number(v || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+const paidAt = (a) => {
+  const h = (a.history || []).filter((x) => x.action === "paid");
+  return h.length ? h[h.length - 1].at : null;
+};
+const day = (d) => (d ? new Date(d).toLocaleDateString(undefined, { month: "short", day: "numeric" }) : "");
+
+const money = (v) => {
+  const n = Number(v || 0);
+  return `${n < 0 ? "-" : ""}$${Math.abs(n).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+};
 
 // Payment stages after Marcelo's final approval. "approved" in the data
 // model is shown here as "Pending payment".
@@ -43,6 +53,9 @@ export default function Payments() {
   const [periods, setPeriods] = useState([]);
   const [periodId, setPeriodId] = useState(null);
   const [rows, setRows] = useState([]);
+  const [corrections, setCorrections] = useState([]);
+  const [otherCorr, setOtherCorr] = useState([]);
+  const [drawer, setDrawer] = useState(null);
   const [awaitingFinal, setAwaitingFinal] = useState({ count: 0, total: 0 });
   const [filter, setFilter] = useState(FILTERS[0]);
   const [expanded, setExpanded] = useState({});
@@ -52,15 +65,21 @@ export default function Payments() {
   useEffect(() => {
     client.get("/periods").then((res) => {
       setPeriods(res.data);
-      if (res.data.length) setPeriodId(res.data[0].id);
+      if (res.data.length) setPeriodId(currentPeriod(res.data).id);
     });
   }, []);
 
   const load = useCallback(async () => {
     if (!periodId) return;
-    const res = await client.get("/assignments", { params: { period_id: periodId } });
+    const [res, cr, open] = await Promise.all([
+      client.get("/assignments", { params: { period_id: periodId } }),
+      client.get("/corrections", { params: { period_id: periodId } }),
+      client.get("/corrections", { params: { open_only: true } }),
+    ]);
     setRows(res.data.filter((a) => PAYMENT_STATUSES.includes(a.status)));
-    const waiting = res.data.filter((a) => a.status === "admin_reviewed");
+    setCorrections(cr.data.filter((c) => PAYMENT_STATUSES.includes(c.status)));
+    setOtherCorr(open.data.filter((c) => c.period_id !== periodId && PAYMENT_STATUSES.includes(c.status) && c.status !== "paid"));
+    const waiting = res.data.filter((a) => a.status === "submitted" || a.status === "admin_reviewed");
     setAwaitingFinal({ count: waiting.length, total: waiting.reduce((s, a) => s + a.total_amount, 0) });
   }, [periodId]);
 
@@ -68,11 +87,12 @@ export default function Payments() {
     load();
   }, [load]);
 
-  async function setStatus(ids, status, key) {
+  async function setStatus(ids, status, key, correctionIds = []) {
     setBusy(key);
     setError("");
     try {
-      await client.post("/assignments/payment-status", { assignment_ids: ids, status });
+      if (ids.length) await client.post("/assignments/payment-status", { assignment_ids: ids, status });
+      if (correctionIds.length) await client.post("/corrections/payment-status", { correction_ids: correctionIds, status });
       await load();
     } catch (err) {
       setError(err.response?.data?.detail || "Could not update payment status");
@@ -82,26 +102,33 @@ export default function Payments() {
   }
 
   // One entry per person: what they're owed this period and where it stands.
-  const people = Object.values(
-    rows.reduce((acc, a) => {
-      const p = (acc[a.person.id] ||= { id: a.person.id, name: a.person.name, items: [] });
-      p.items.push(a);
-      return acc;
-    }, {})
-  )
+  const acc = {};
+  const grp = (id, name) => (acc[id] ||= { id, name, items: [], corr: [] });
+  rows.forEach((a) => grp(a.person.id, a.person.name).items.push(a));
+  corrections.forEach((c) => grp(c.person_id, c.person_name).corr.push(c));
+  const people = Object.values(acc)
     .map((p) => {
-      const statuses = [...new Set(p.items.map((a) => a.status))];
+      const statuses = [...new Set([...p.items.map((a) => a.status), ...p.corr.map((c) => c.status)])];
+      const all = [...p.items.map((a) => ({ s: a.status, v: a.total_amount })), ...p.corr.map((c) => ({ s: c.status, v: Number(c.amount) }))];
+      const dates = [...p.items.map(paidAt), ...p.corr.map((c) => c.paid_at)].filter(Boolean).sort();
       return {
         ...p,
         status: statuses.length === 1 ? statuses[0] : "mixed",
         hours: p.items.reduce((s, a) => s + Number(a.hours), 0),
-        total: p.items.reduce((s, a) => s + a.total_amount, 0),
+        total: all.reduce((s, x) => s + x.v, 0),
+        paid: all.filter((x) => x.s === "paid").reduce((s, x) => s + x.v, 0),
+        left: all.filter((x) => x.s !== "paid").reduce((s, x) => s + x.v, 0),
+        lastPaid: dates[dates.length - 1],
       };
     })
     .sort((a, b) => a.name.localeCompare(b.name));
 
-  const visible = people.filter((p) => p.items.some((a) => filter.match(a.status)));
-  const sumBy = (status) => rows.filter((a) => a.status === status).reduce((s, a) => s + a.total_amount, 0);
+  const visible = people.filter(
+    (p) => p.items.some((a) => filter.match(a.status)) || p.corr.some((c) => filter.match(c.status))
+  );
+  const sumBy = (status) =>
+    rows.filter((a) => a.status === status).reduce((s, a) => s + a.total_amount, 0) +
+    corrections.filter((c) => c.status === status).reduce((s, c) => s + Number(c.amount), 0);
 
   function downloadCsv() {
     const header = ["Person", "Program", "Role", "Cohort / work", "Hours", "Rate", "Adjustment", "Total", "Status"];
@@ -112,6 +139,11 @@ export default function Payments() {
           p.name, a.program.code, a.role.name, a.work_reference, a.hours, a.rate,
           a.adjustment_amount, a.total_amount.toFixed(2), STAGE_LABEL[a.status],
         ])
+        .concat(
+          p.corr
+            .filter((c) => filter.match(c.status))
+            .map((c) => [p.name, "", "Correction", c.note, "", "", "", Number(c.amount).toFixed(2), STAGE_LABEL[c.status]])
+        )
     );
     const csv = [header, ...lines]
       .map((r) => r.map((v) => `"${String(v ?? "").replace(/"/g, '""')}"`).join(","))
@@ -131,8 +163,9 @@ export default function Payments() {
         Pay<em>ments</em>
       </h1>
       <p className="subhead">
-        Everything Marcelo has given final approval, grouped by person. Mark each one as it moves
-        through payroll: pending → registered → paid.
+        Everything approved, grouped by person — including approved corrections (a minus amount is
+        an overpayment to deduct). Mark each one as it moves through payroll: pending → registered → paid.
+        Click a line to see its history or add a correction, even after it's paid.
       </p>
 
       {periods.length > 0 && <PeriodSelector periods={periods} value={periodId} onChange={setPeriodId} />}
@@ -143,9 +176,9 @@ export default function Payments() {
         <StatCard tone="green" label="Paid" value={money(sumBy("paid"))} />
         <StatCard
           tone="red"
-          label="Waiting on final approval"
+          label="Waiting approval"
           value={money(awaitingFinal.total)}
-          sub={`${awaitingFinal.count} item${awaitingFinal.count === 1 ? "" : "s"} with Marcelo`}
+          sub={`${awaitingFinal.count} item${awaitingFinal.count === 1 ? "" : "s"} not approved yet`}
         />
       </div>
 
@@ -164,6 +197,14 @@ export default function Payments() {
         )}
       </div>
 
+      {otherCorr.length > 0 && (
+        <div className="banner warn" style={{ marginBottom: 12 }}>
+          {otherCorr.length} approved correction{otherCorr.length === 1 ? "" : "s"} from other months still to settle (
+          {[...new Set(otherCorr.map((c) => c.period_label))].join(", ")}): {money(otherCorr.reduce((s, c) => s + Number(c.amount), 0))}.
+          Switch month above to settle them.
+        </div>
+      )}
+
       <div className="card">
         {error && <div className="banner">{error}</div>}
         {visible.length === 0 ? (
@@ -180,7 +221,9 @@ export default function Payments() {
                 <th>Person</th>
                 <th>Items</th>
                 <th>Hours</th>
-                <th>Total to pay</th>
+                <th>Total</th>
+                <th>Paid</th>
+                <th>Left</th>
                 <th>Status</th>
                 <th style={{ width: 280 }}>Mark all as</th>
               </tr>
@@ -199,19 +242,24 @@ export default function Payments() {
                       </button>
                     </td>
                     <td><strong>{p.name}</strong></td>
-                    <td>{p.items.length}</td>
+                    <td>{p.items.length}{p.corr.length ? ` + ${p.corr.length} corr.` : ""}</td>
                     <td>{p.hours.toLocaleString()}</td>
-                    <td><strong>{money(p.total)}</strong></td>
+                    <td>{money(p.total)}</td>
+                    <td>
+                      {p.paid ? <strong className="txt-green">{money(p.paid)}</strong> : <span className="small-muted">—</span>}
+                      {p.lastPaid && <div className="small-muted">{day(p.lastPaid)}</div>}
+                    </td>
+                    <td>{p.left ? <strong>{money(p.left)}</strong> : <span className="small-muted">$0.00</span>}</td>
                     <td>
                       <span className={`pill ${p.status === "mixed" ? "submitted" : p.status}`}>
-                        {p.status === "mixed" ? "Mixed" : STAGE_LABEL[p.status]}
+                        {p.status === "mixed" ? (p.paid ? "Partly paid" : "Mixed") : STAGE_LABEL[p.status]}
                       </span>
                     </td>
                     <td>
                       <StageButtons
                         current={p.status}
                         disabled={busy !== null}
-                        onChange={(status) => setStatus(p.items.map((a) => a.id), status, `p${p.id}`)}
+                        onChange={(status) => setStatus(p.items.map((a) => a.id), status, `p${p.id}`, p.corr.map((c) => c.id))}
                       />
                     </td>
                   </tr>
@@ -220,7 +268,9 @@ export default function Payments() {
                       <tr key={a.id} className="detail-row">
                         <td></td>
                         <td className="small-muted">
-                          {a.program.code} · {a.role.name} · {a.work_reference}
+                          <button className="linklike" onClick={() => setDrawer(a)}>
+                            {a.program.code} · {a.role.name} · {a.work_reference}
+                          </button>
                         </td>
                         <td></td>
                         <td>{a.hours}h × ${Number(a.rate).toFixed(2)}</td>
@@ -230,12 +280,37 @@ export default function Payments() {
                             <div className="small-muted">incl. adj. {money(a.adjustment_amount)}</div>
                           )}
                         </td>
+                        <td>{a.status === "paid" ? <span className="small-muted">{day(paidAt(a))}</span> : ""}</td>
+                        <td>{a.status !== "paid" ? money(a.total_amount) : ""}</td>
                         <td><span className={`pill ${a.status}`}>{STAGE_LABEL[a.status]}</span></td>
                         <td>
                           <StageButtons
                             current={a.status}
                             disabled={busy !== null}
                             onChange={(status) => setStatus([a.id], status, `a${a.id}`)}
+                          />
+                        </td>
+                      </tr>
+                    ))}
+                  {expanded[p.id] &&
+                    p.corr.map((c) => (
+                      <tr key={`c${c.id}`} className="detail-row corr-row">
+                        <td></td>
+                        <td className="small-muted">
+                          Correction · {c.assignment_label}
+                          <div>{c.note}</div>
+                        </td>
+                        <td></td>
+                        <td className="small-muted">{c.created_by_name}</td>
+                        <td><strong>{signed(c.amount)}</strong></td>
+                        <td>{c.status === "paid" ? <span className="small-muted">{day(c.paid_at)}</span> : ""}</td>
+                        <td>{c.status !== "paid" ? signed(c.amount) : ""}</td>
+                        <td><span className={`pill ${c.status}`}>{STAGE_LABEL[c.status]}</span></td>
+                        <td>
+                          <StageButtons
+                            current={c.status}
+                            disabled={busy !== null}
+                            onChange={(status) => setStatus([], status, `c${c.id}`, [c.id])}
                           />
                         </td>
                       </tr>
@@ -248,10 +323,13 @@ export default function Payments() {
         {visible.length > 0 && (
           <p className="small-muted" style={{ marginTop: 14 }}>
             {visible.length} {visible.length === 1 ? "person" : "people"} · total{" "}
-            <strong>{money(visible.reduce((s, p) => s + p.total, 0))}</strong>
+            <strong>{money(visible.reduce((s, p) => s + p.total, 0))}</strong> · paid{" "}
+            <strong className="txt-green">{money(visible.reduce((s, p) => s + p.paid, 0))}</strong> · left{" "}
+            <strong>{money(visible.reduce((s, p) => s + p.left, 0))}</strong>
           </p>
         )}
       </div>
+      {drawer && <RowDrawer assignment={drawer} onClose={() => setDrawer(null)} onChanged={load} />}
     </>
   );
 }

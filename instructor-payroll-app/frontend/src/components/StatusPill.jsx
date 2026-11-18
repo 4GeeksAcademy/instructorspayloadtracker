@@ -1,9 +1,9 @@
 const LABELS = {
   draft: "Draft",
-  submitted: "Submitted",
-  admin_reviewed: "Admin reviewed",
-  approved: "Approved",
-  registered: "Registered",
+  submitted: "Waiting approval",
+  admin_reviewed: "Waiting approval",
+  approved: "Approved — to pay",
+  registered: "Registered — to pay",
   paid: "Paid",
   rejected: "Rejected",
 };
