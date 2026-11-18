@@ -6,6 +6,7 @@ import SubmitHours from "./pages/SubmitHours.jsx";
 import ReviewQueue from "./pages/ReviewQueue.jsx";
 import ApprovalQueue from "./pages/ApprovalQueue.jsx";
 import Revenue from "./pages/Revenue.jsx";
+import Payments from "./pages/Payments.jsx";
 import Settings from "./pages/Settings.jsx";
 import CostsDashboard from "./costs/CostsDashboard.jsx";
 import CostsEntries from "./costs/CostsEntries.jsx";
@@ -86,6 +87,9 @@ function Shell() {
           )}
           {user.role === "owner" && <NavLink to="/approve">Final Approval</NavLink>}
           {(user.role === "admin" || user.role === "owner") && (
+            <NavLink to="/payments">Payments</NavLink>
+          )}
+          {(user.role === "admin" || user.role === "owner") && (
             <NavLink to="/revenue">{user.role === "owner" || user.view_all ? "Revenue" : "Students"}</NavLink>
           )}
         </div>
@@ -111,6 +115,14 @@ function Shell() {
           <Route path="/costs/loans" element={<RequireCosts><CostsLoans /></RequireCosts>} />
           <Route path="/costs/compare" element={<RequireCosts><CostsCompare /></RequireCosts>} />
           <Route path="/costs/adjust" element={<RequireCosts><CostsAdjust /></RequireCosts>} />
+          <Route
+            path="/payments"
+            element={
+              <RequireAdminOrOwner>
+                <Payments />
+              </RequireAdminOrOwner>
+            }
+          />
           <Route
             path="/revenue"
             element={
