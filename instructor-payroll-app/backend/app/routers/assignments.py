@@ -2,7 +2,7 @@ from datetime import datetime, timezone
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy import func
+from sqlalchemy import func, or_
 from sqlalchemy.orm import Session, joinedload
 
 from app.core.categorize import suggest_work_category
@@ -28,6 +28,7 @@ from app.schemas.schemas import (
     AssignmentUpdate,
     CategorySummary,
     CohortSummary,
+    PaymentStatusChange,
     PersonSummary,
     ProgramSummary,
 )
@@ -57,6 +58,28 @@ def _validate_references(db: Session, payload) -> None:
             raise HTTPException(status_code=400, detail=f"Invalid {field}: no record with id {value}")
 
 
+def scope_to_user(query, user: User):
+    """
+    Program leads (Loreto, Diego) only ever see their own data: rows in their
+    program, or rows they entered themselves. Admins (Kevin) and the owner see
+    everything.
+    """
+    if user.role != UserRole.program_lead:
+        return query
+    own = or_(Assignment.created_by == user.id, Assignment.submitted_by == user.id)
+    if user.program_id:
+        return query.filter(or_(Assignment.program_id == user.program_id, own))
+    return query.filter(own)
+
+
+def can_touch(user: User, a: Assignment) -> bool:
+    if user.role != UserRole.program_lead:
+        return True
+    if user.program_id and a.program_id == user.program_id:
+        return True
+    return user.id in (a.created_by, a.submitted_by)
+
+
 def _with_relations(query):
     return query.options(
         joinedload(Assignment.person),
@@ -75,11 +98,7 @@ def list_assignments(
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
-    q = _with_relations(db.query(Assignment))
-
-    # A program_lead only sees/submits for their own program.
-    if user.role == UserRole.program_lead and user.program_id:
-        q = q.filter(Assignment.program_id == user.program_id)
+    q = scope_to_user(_with_relations(db.query(Assignment)), user)
 
     if period_id:
         q = q.filter(Assignment.period_id == period_id)
@@ -108,7 +127,7 @@ def create_assignment(
     if data.get("work_category") is None:
         data["work_category"] = suggest_work_category(data["work_reference"])
 
-    assignment = Assignment(**data, status=AssignmentStatus.draft)
+    assignment = Assignment(**data, status=AssignmentStatus.draft, created_by=user.id)
     db.add(assignment)
     db.flush()
     _log(db, assignment.id, user.id, "created")
@@ -125,23 +144,29 @@ def update_assignment(
     user: User = Depends(require_role(UserRole.program_lead, UserRole.admin, UserRole.owner)),
 ):
     """
-    Two kinds of edit:
+    Three kinds of edit:
     - Before submission (draft / rejected): the submitter can change every
-      field they entered. Program leads stay inside their own program.
+      field they entered. Program leads stay inside their own data.
     - During review (submitted / admin_reviewed): admins and the owner can
       correct cohort name, hours and rate before approving. Each change is
-      logged with before -> after so the final approver can see it.
-    Nothing can be edited once approved.
+      logged with before -> after so the approver can see it.
+    - After approval, even after payment (approved / registered / paid):
+      admins and the owner can fix the record (cohort, hours, rate,
+      adjustment, notes), but only with a reason, which is logged. This
+      changes the record, not money: if money is still owed or was
+      overpaid, raise a Correction instead so it shows up in Payments.
     """
     assignment = db.query(Assignment).filter(Assignment.id == assignment_id).first()
     if not assignment:
         raise HTTPException(status_code=404, detail="Assignment not found")
 
-    if user.role == UserRole.program_lead and user.program_id and assignment.program_id != user.program_id:
-        raise HTTPException(status_code=403, detail="You can only edit hours for your own program")
+    if not can_touch(user, assignment):
+        raise HTTPException(status_code=403, detail="You can only edit your own data")
 
     changes = payload.model_dump(exclude_unset=True)
+    edit_reason = (changes.pop("edit_reason", None) or "").strip()
     in_review = assignment.status in (AssignmentStatus.submitted, AssignmentStatus.admin_reviewed)
+    after_approval = assignment.status in PAYMENT_STATUSES
 
     if assignment.status in (AssignmentStatus.draft, AssignmentStatus.rejected):
         if user.role == UserRole.program_lead and user.program_id and changes.get("program_id", user.program_id) != user.program_id:
@@ -155,8 +180,19 @@ def update_assignment(
                 status_code=400,
                 detail="During review only cohort name, hours and rate can be changed",
             )
+    elif after_approval:
+        if user.role not in (UserRole.admin, UserRole.owner):
+            raise HTTPException(
+                status_code=400,
+                detail="This item is already approved. Add a correction instead and Kevin will review it.",
+            )
+        not_allowed = set(changes) - RECORD_FIX_FIELDS
+        if not_allowed:
+            raise HTTPException(status_code=400, detail="After approval only cohort, hours, rate, adjustment and notes can be fixed")
+        if not edit_reason:
+            raise HTTPException(status_code=400, detail="Say why you're changing an approved item")
     else:
-        raise HTTPException(status_code=400, detail="Approved items can no longer be edited")
+        raise HTTPException(status_code=400, detail="This item can't be edited")
 
     for field in ("work_reference", "rate", "hours"):
         if field in changes and changes[field] is None:
@@ -176,7 +212,10 @@ def update_assignment(
             diffs.append(f"{REVIEW_FIELD_LABELS.get(field, field)} {_fmt(old)} → {_fmt(value)}")
         setattr(assignment, field, value)
 
-    if in_review:
+    if after_approval:
+        _log(db, assignment.id, user.id, "record_fix",
+             f"{'; '.join(diffs) or 'No value changed'} — {edit_reason} (status: {assignment.status.value})")
+    elif in_review:
         if diffs:
             _log(db, assignment.id, user.id, "review_edit", "; ".join(diffs))
     else:
@@ -187,12 +226,20 @@ def update_assignment(
 
 
 REVIEW_EDITABLE_FIELDS = {"work_reference", "hours", "rate"}
-REVIEW_FIELD_LABELS = {"work_reference": "Cohort", "hours": "Hours", "rate": "Rate"}
+RECORD_FIX_FIELDS = {"work_reference", "hours", "rate", "adjustment_amount", "adjustment_reason", "notes", "work_category"}
+REVIEW_FIELD_LABELS = {
+    "work_reference": "Cohort", "hours": "Hours", "rate": "Rate",
+    "adjustment_amount": "Adjustment", "adjustment_reason": "Adjustment reason", "notes": "Notes",
+    "work_category": "Category",
+}
+PAYMENT_STATUSES = (AssignmentStatus.approved, AssignmentStatus.registered, AssignmentStatus.paid)
 
 
 def _fmt(value) -> str:
     if value is None:
         return "—"
+    if hasattr(value, "value"):
+        return value.value
     try:
         return f"{float(value):g}"
     except (TypeError, ValueError):
@@ -212,6 +259,8 @@ def _transition(
     assignment = db.query(Assignment).filter(Assignment.id == assignment_id).first()
     if not assignment:
         raise HTTPException(status_code=404, detail="Assignment not found")
+    if not can_touch(user, assignment):
+        raise HTTPException(status_code=403, detail="You can only act on your own data")
     if assignment.status not in allowed_from:
         raise HTTPException(
             status_code=400,
@@ -231,6 +280,31 @@ def _transition(
     db.commit()
     db.refresh(assignment)
     return _with_relations(db.query(Assignment)).filter(Assignment.id == assignment.id).first()
+
+
+@router.delete("/{assignment_id}", status_code=204)
+def delete_assignment(
+    assignment_id: int,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_role(UserRole.program_lead, UserRole.admin, UserRole.owner)),
+):
+    """Delete a row that was never approved (draft, submitted or sent back). Approved rows stay -- use a correction."""
+    a = db.query(Assignment).filter(Assignment.id == assignment_id).first()
+    if not a:
+        raise HTTPException(status_code=404, detail="Assignment not found")
+    if not can_touch(user, a):
+        raise HTTPException(status_code=403, detail="You can only delete your own data")
+    allowed = (AssignmentStatus.draft, AssignmentStatus.rejected)
+    if user.role != UserRole.program_lead:
+        allowed += (AssignmentStatus.submitted, AssignmentStatus.admin_reviewed)
+    if a.status not in allowed:
+        raise HTTPException(status_code=400, detail="Only items that aren't approved yet can be deleted")
+    from app.models.models import Correction
+    db.query(Correction).filter(Correction.assignment_id == a.id).delete()
+    db.query(AuditLog).filter(AuditLog.assignment_id == a.id).delete()
+    db.delete(a)
+    db.commit()
+    return None
 
 
 @router.post("/{assignment_id}/submit", response_model=AssignmentOut)
@@ -269,12 +343,16 @@ def admin_review_assignment(
 def approve_assignment(
     assignment_id: int,
     db: Session = Depends(get_db),
-    user: User = Depends(require_role(UserRole.owner)),
+    user: User = Depends(require_role(UserRole.admin, UserRole.owner)),
 ):
-    """Marcelo's final approval -- third tier."""
+    """
+    Approve for payment. Kevin (admin) or Marcelo (owner) approve in one
+    step, straight from what the program lead submitted. Rows left in the
+    old middle step (admin_reviewed) can be approved too.
+    """
     return _transition(
         db, assignment_id, user,
-        allowed_from=[AssignmentStatus.admin_reviewed],
+        allowed_from=[AssignmentStatus.submitted, AssignmentStatus.admin_reviewed],
         to_status=AssignmentStatus.approved,
         action="approved",
         stamp_field="approved",
@@ -334,10 +412,88 @@ def mark_paid_assignment(
     )
 
 
+@router.post("/payment-status", response_model=list[AssignmentOut])
+def set_payment_status(
+    payload: PaymentStatusChange,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_role(UserRole.admin, UserRole.owner)),
+):
+    """
+    Payments desk: after final approval, set one or many rows to pending
+    payment (approved), registered in the payroll system, or paid. Moving
+    back (e.g. paid -> pending) is allowed to fix a mis-click; every change
+    is audit-logged. Only works on rows that already have final approval.
+    """
+    if payload.status not in PAYMENT_STATUSES:
+        raise HTTPException(status_code=400, detail="Status must be pending payment, registered or paid")
+    if not payload.assignment_ids:
+        return []
+
+    rows = db.query(Assignment).filter(Assignment.id.in_(payload.assignment_ids)).all()
+    if len(rows) != len(set(payload.assignment_ids)):
+        raise HTTPException(status_code=404, detail="Some assignments were not found")
+    not_ready = [a.id for a in rows if a.status not in PAYMENT_STATUSES]
+    if not_ready:
+        raise HTTPException(status_code=400, detail="Only items with final approval can be marked for payment")
+
+    action = {
+        AssignmentStatus.approved: "payment_pending",
+        AssignmentStatus.registered: "registered",
+        AssignmentStatus.paid: "paid",
+    }[payload.status]
+    for a in rows:
+        if a.status != payload.status:
+            _log(db, a.id, user.id, action, f"{a.status.value} → {payload.status.value}")
+            a.status = payload.status
+    db.commit()
+    return (
+        _with_relations(db.query(Assignment))
+        .filter(Assignment.id.in_(payload.assignment_ids))
+        .order_by(Assignment.id)
+        .all()
+    )
+
+
+@router.get("/activity")
+def period_activity(
+    period_id: int,
+    limit: int = 80,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """What happened this period, newest first: submissions, edits, approvals,
+    payments, record fixes and corrections. Leads only see their own rows."""
+    ids = [r.id for r in scope_to_user(db.query(Assignment.id), user).filter(Assignment.period_id == period_id)]
+    if not ids:
+        return []
+    rows = (
+        db.query(AuditLog, Assignment, Person)
+        .join(Assignment, Assignment.id == AuditLog.assignment_id)
+        .join(Person, Person.id == Assignment.person_id)
+        .filter(AuditLog.assignment_id.in_(ids))
+        .order_by(AuditLog.id.desc())
+        .limit(min(limit, 300))
+        .all()
+    )
+    return [
+        {
+            "id": log.id,
+            "action": log.action,
+            "details": log.details,
+            "user": log.user.name if log.user else None,
+            "at": log.created_at,
+            "assignment_id": a.id,
+            "person": p.name,
+            "work_reference": a.work_reference,
+        }
+        for log, a, p in rows
+    ]
+
+
 # ---------- Rollups: per person / per program, for a given period ----------
 
 @router.get("/summary/by-person", response_model=list[PersonSummary])
-def summary_by_person(period_id: int, db: Session = Depends(get_db)):
+def summary_by_person(period_id: int, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
     rows = (
         db.query(
             Person.id.label("person_id"),
@@ -348,6 +504,7 @@ def summary_by_person(period_id: int, db: Session = Depends(get_db)):
         )
         .join(Assignment, Assignment.person_id == Person.id)
         .filter(Assignment.period_id == period_id)
+        .filter(scope_to_user(db.query(Assignment.id), user).whereclause if user.role == UserRole.program_lead else True)
         .group_by(Person.id, Person.name)
         .order_by(Person.name)
         .all()
@@ -365,7 +522,7 @@ def summary_by_person(period_id: int, db: Session = Depends(get_db)):
 
 
 @router.get("/summary/by-program", response_model=list[ProgramSummary])
-def summary_by_program(period_id: int, db: Session = Depends(get_db)):
+def summary_by_program(period_id: int, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
     rows = (
         db.query(
             Program.id.label("program_id"),
@@ -376,6 +533,7 @@ def summary_by_program(period_id: int, db: Session = Depends(get_db)):
         )
         .join(Assignment, Assignment.program_id == Program.id)
         .filter(Assignment.period_id == period_id)
+        .filter(scope_to_user(db.query(Assignment.id), user).whereclause if user.role == UserRole.program_lead else True)
         .group_by(Program.id, Program.code)
         .order_by(Program.code)
         .all()
@@ -393,7 +551,7 @@ def summary_by_program(period_id: int, db: Session = Depends(get_db)):
 
 
 @router.get("/summary/by-category", response_model=list[CategorySummary])
-def summary_by_category(period_id: int, db: Session = Depends(get_db)):
+def summary_by_category(period_id: int, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
     """
     Cohort/Class Instruction vs Mentorship/Private Sessions vs Overhead/Admin
     -- the dashboard's top-level cost-center split.
@@ -406,6 +564,7 @@ def summary_by_category(period_id: int, db: Session = Depends(get_db)):
             func.coalesce(func.sum(Assignment.hours * Assignment.rate + Assignment.adjustment_amount), 0).label("total_amount"),
         )
         .filter(Assignment.period_id == period_id)
+        .filter(scope_to_user(db.query(Assignment.id), user).whereclause if user.role == UserRole.program_lead else True)
         .group_by(Assignment.work_category)
         .all()
     )
@@ -428,7 +587,7 @@ INSTRUCTIONAL_ROLE_NAMES = {"instructor", "ta"}
 
 
 @router.get("/summary/by-cohort", response_model=list[CohortSummary])
-def summary_by_cohort(period_id: int, db: Session = Depends(get_db)):
+def summary_by_cohort(period_id: int, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
     """
     Cost per real cohort/class, with the people and roles assigned to it --
     answers "what does this cohort cost, and who's staffed on it." Also folds
@@ -438,7 +597,7 @@ def summary_by_cohort(period_id: int, db: Session = Depends(get_db)):
     live in their own views, since they aren't tied to one cohort).
     """
     assignments = (
-        _with_relations(db.query(Assignment))
+        scope_to_user(_with_relations(db.query(Assignment)), user)
         .filter(Assignment.period_id == period_id, Assignment.work_category == WorkCategory.cohort_class)
         .all()
     )
@@ -455,6 +614,7 @@ def summary_by_cohort(period_id: int, db: Session = Depends(get_db)):
         for e in db.query(CohortEnrollment)
         .join(Program, CohortEnrollment.program_id == Program.id)
         .filter(CohortEnrollment.period_id == period_id)
+        .filter(CohortEnrollment.program_id == user.program_id if user.role == UserRole.program_lead else True)
         .all()
     }
 

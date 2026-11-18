@@ -1,8 +1,9 @@
 from fastapi import APIRouter, Depends, HTTPException
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.core.database import get_db
-from app.core.deps import require_role
+from app.core.deps import get_current_user, require_role
 from app.core.security import hash_password
 from app.models.models import User, UserRole
 from app.schemas.schemas import AdminSetPasswordRequest, UserAdminOut, UserCreate, UserUpdate
@@ -74,3 +75,28 @@ def set_user_password(
     user.hashed_password = hash_password(payload.new_password)
     db.commit()
     return None
+
+
+@router.delete("/{user_id}")
+def delete_user(user_id: int, db: Session = Depends(get_db), me: User = Depends(get_current_user)):
+    """
+    Remove someone's login. If they never did anything in the app the account
+    is deleted outright. If their name is on history (hours they entered,
+    approvals, payments), the account is switched off instead so the history
+    keeps saying who did what -- they can no longer log in either way.
+    """
+    user = db.query(User).filter(User.id == user_id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    if user.id == me.id or user.role == UserRole.owner:
+        raise HTTPException(status_code=400, detail="The super admin account can't be removed")
+    try:
+        db.delete(user)
+        db.commit()
+        return {"result": "deleted"}
+    except IntegrityError:
+        db.rollback()
+        user = db.query(User).filter(User.id == user_id).first()
+        user.active = False
+        db.commit()
+        return {"result": "deactivated"}

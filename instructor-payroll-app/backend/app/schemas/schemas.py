@@ -142,6 +142,7 @@ class AssignmentUpdate(BaseModel):
     notes: Optional[str] = None
     role_id: Optional[int] = None
     program_id: Optional[int] = None
+    edit_reason: Optional[str] = None   # required when fixing an item that's already approved / paid
 
 
 class AssignmentOut(BaseModel):
@@ -167,6 +168,13 @@ class AssignmentOut(BaseModel):
     approved_at: Optional[datetime] = None
     review_changes: list[str] = []
     rejection_reason: Optional[str] = None
+    created_by: Optional[int] = None
+    history: list[dict] = []
+
+
+class PaymentStatusChange(BaseModel):
+    assignment_ids: list[int]
+    status: AssignmentStatus  # approved (pending payment) / registered / paid
 
 
 class AssignmentStatusChange(BaseModel):
@@ -417,3 +425,45 @@ class LoanOut(LoanBase):
     model_config = ConfigDict(from_attributes=True)
     id: int
     updated_at: Optional[datetime] = None
+
+
+# ---------- Corrections (notes / differences on any row, even after payment) ----------
+
+class CorrectionCreate(BaseModel):
+    assignment_id: int
+    amount: Decimal = Decimal("0")   # + we owe more, - we overpaid, 0 = note only
+    note: str = Field(min_length=3)
+
+
+class CorrectionUpdate(BaseModel):
+    amount: Optional[Decimal] = None
+    note: Optional[str] = Field(None, min_length=3)
+
+
+class CorrectionReject(BaseModel):
+    reason: Optional[str] = None
+
+
+class CorrectionPaymentStatus(BaseModel):
+    correction_ids: list[int]
+    status: str = Field(pattern="^(approved|registered|paid)$")
+
+
+class CorrectionOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    id: int
+    assignment_id: int
+    period_id: int
+    person_id: int
+    person_name: str
+    period_label: str
+    assignment_label: str
+    assignment_status: str
+    amount: Decimal
+    note: str
+    status: str
+    resolution: Optional[str] = None
+    created_by_name: Optional[str] = None
+    created_at: Optional[datetime] = None
+    approved_at: Optional[datetime] = None
+    paid_at: Optional[datetime] = None

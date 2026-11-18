@@ -3,9 +3,9 @@ import client from "../api/client";
 import { useAuth } from "../api/auth.jsx";
 
 const ROLE_LABELS = {
-  program_lead: "Program lead",
-  admin: "Admin",
-  owner: "Owner",
+  program_lead: "Program lead — sets the numbers, sees only their own data",
+  admin: "Admin — sees everything, approves and pays",
+  owner: "Super admin",
 };
 
 function ChangeOwnPassword() {
@@ -128,8 +128,8 @@ function UserForm({ initial, programs, onSave, onCancel, saving, isNew }) {
           <label>Role (Instructors section)</label>
           <select value={d.role} onChange={set("role")} disabled={isOwnerRow}>
             {isOwnerRow && <option value="owner">Owner</option>}
-            <option value="admin">Admin (reviews hours)</option>
-            <option value="program_lead">Program lead (submits hours)</option>
+            <option value="admin">Admin — sees everything, approves &amp; pays (Kevin)</option>
+            <option value="program_lead">Program lead — sets the numbers, own data only (Loreto, Diego)</option>
           </select>
         </div>
         {d.role === "program_lead" && (
@@ -237,6 +237,18 @@ function ManageUsers() {
     }
   };
 
+  const removeUser = async (u) => {
+    if (!window.confirm(`Remove ${u.name}? They won't be able to log in. If their name is on past hours, approvals or payments, the account is switched off instead of deleted so that history stays.`)) return;
+    setError("");
+    try {
+      const r = await client.delete(`/users/${u.id}`);
+      if (r.data.result === "deactivated") setError(`${u.name} has history in the app, so the account was switched off (can't log in) instead of deleted.`);
+      load();
+    } catch (err) {
+      setError(err.response?.data?.detail || "Could not remove user");
+    }
+  };
+
   return (
     <>
       <div className="section-title" style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
@@ -285,6 +297,9 @@ function ManageUsers() {
                     <td className="row-actions">
                       <button className="secondary sm" onClick={() => { setEditId(u.id); setCreating(false); }}>Edit access</button>
                       <ResetPassword user={u} />
+                      {u.role !== "owner" && (
+                        <button className="danger sm" onClick={() => removeUser(u)}>Remove</button>
+                      )}
                     </td>
                   </tr>
                 )
@@ -309,6 +324,91 @@ export default function Settings() {
       <ChangeOwnPassword />
 
       {user.role === "owner" && <ManageUsers />}
+      {user.role === "owner" && <ManagePeople />}
+    </>
+  );
+}
+
+
+/** Instructors / mentors who get paid (not logins). Super admin only. */
+function ManagePeople() {
+  const [people, setPeople] = useState([]);
+  const [name, setName] = useState("");
+  const [email, setEmail] = useState("");
+  const [editing, setEditing] = useState(null);
+  const [msg, setMsg] = useState("");
+  const [q, setQ] = useState("");
+
+  const load = () => client.get("/people").then((r) => setPeople(r.data));
+  useEffect(() => { load(); }, []);
+
+  const err = (e, fallback) => {
+    const d = e.response?.data?.detail;
+    setMsg(Array.isArray(d) ? d.map((x) => x.msg).join("; ") : d || fallback);
+  };
+
+  async function add(e) {
+    e.preventDefault();
+    setMsg("");
+    try {
+      await client.post("/people", { name: name.trim(), email: email.trim() || null });
+      setName(""); setEmail(""); load();
+    } catch (e2) { err(e2, "Could not add"); }
+  }
+  async function save() {
+    try {
+      await client.patch(`/people/${editing.id}`, { name: editing.name, email: editing.email || null });
+      setEditing(null); load();
+    } catch (e2) { err(e2, "Could not save"); }
+  }
+  async function remove(p) {
+    if (!window.confirm(`Remove ${p.name} from the list?`)) return;
+    try {
+      const r = await client.delete(`/people/${p.id}`);
+      setMsg(r.data.result === "archived"
+        ? `${p.name} has pay history, so they were archived: hidden from new entries, past payments untouched.`
+        : `${p.name} deleted.`);
+      load();
+    } catch (e2) { err(e2, "Could not remove"); }
+  }
+
+  const shown = people.filter((p) => p.name.toLowerCase().includes(q.toLowerCase()));
+  return (
+    <>
+      <div className="section-title">Instructors &amp; mentors (people who get paid)</div>
+      <div className="card">
+        <form className="actions" onSubmit={add} style={{ marginBottom: 14, flexWrap: "wrap" }}>
+          <input placeholder="Full name" value={name} onChange={(e) => setName(e.target.value)} required />
+          <input placeholder="Email (optional)" type="email" value={email} onChange={(e) => setEmail(e.target.value)} />
+          <button className="primary sm">+ Add person</button>
+          <input placeholder="Search…" value={q} onChange={(e) => setQ(e.target.value)} style={{ marginLeft: "auto" }} />
+        </form>
+        {msg && <div className="banner warn">{msg}</div>}
+        <table>
+          <thead><tr><th>Name</th><th>Email</th><th /></tr></thead>
+          <tbody>
+            {shown.map((p) => editing?.id === p.id ? (
+              <tr key={p.id} className="row-editing">
+                <td><input value={editing.name} onChange={(e) => setEditing({ ...editing, name: e.target.value })} /></td>
+                <td><input value={editing.email || ""} onChange={(e) => setEditing({ ...editing, email: e.target.value })} /></td>
+                <td className="row-actions">
+                  <button className="primary sm" onClick={save}>Save</button>
+                  <button className="secondary sm" onClick={() => setEditing(null)}>Cancel</button>
+                </td>
+              </tr>
+            ) : (
+              <tr key={p.id}>
+                <td><strong>{p.name}</strong></td>
+                <td>{p.email || <span className="small-muted">—</span>}</td>
+                <td className="row-actions">
+                  <button className="secondary sm" onClick={() => setEditing(p)}>Edit</button>
+                  <button className="danger sm" onClick={() => remove(p)}>Remove</button>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
     </>
   );
 }

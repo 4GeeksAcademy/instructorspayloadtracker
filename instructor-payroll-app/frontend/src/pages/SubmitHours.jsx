@@ -4,6 +4,7 @@ import client from "../api/client";
 import { useAuth } from "../api/auth.jsx";
 import StatusPill from "../components/StatusPill.jsx";
 import PeriodSelector from "../components/PeriodSelector.jsx";
+import RowDrawer from "../components/RowDrawer.jsx";
 
 const EMPTY_FORM = {
   person_name: "",
@@ -148,6 +149,19 @@ export default function SubmitHours() {
     setForm({ ...EMPTY_FORM, program_id: user.program_id || "" });
   }
 
+  const [drawer, setDrawer] = useState(null);
+
+  async function removeRow(a) {
+    if (!window.confirm(`Delete this row for ${a.person.name}? It was never approved, so nothing else changes.`)) return;
+    try {
+      await client.delete(`/assignments/${a.id}`);
+      if (editingId === a.id) cancelEdit();
+      loadAssignments();
+    } catch (err) {
+      setError(err.response?.data?.detail || "Could not delete");
+    }
+  }
+
   async function submitForReview(id) {
     await client.post(`/assignments/${id}/submit`);
     loadAssignments();
@@ -161,11 +175,12 @@ export default function SubmitHours() {
   return (
     <>
       <h1>
-        Submit instructor <em>hours</em>
+        {user.role === "program_lead" ? <>My <em>hours</em></> : <>Enter instructor <em>hours</em></>}
       </h1>
       <p className="subhead">
         Add one row per person + role + program/cohort. Someone with more than one
-        role this period gets more than one row.
+        role this period gets more than one row. Send it for approval when it's ready — you can keep
+        editing until then. After that, click a row below to follow it to payment or add a correction.
       </p>
 
       {periods.length > 0 && (
@@ -366,7 +381,10 @@ export default function SubmitHours() {
                         onClick={() => submitForReview(a.id)}
                         disabled={editingId === a.id}
                       >
-                        Submit for review
+                        Submit for approval
+                      </button>
+                      <button className="linklike" onClick={() => removeRow(a)} disabled={editingId === a.id}>
+                        Delete
                       </button>
                     </div>
                   </td>
@@ -378,7 +396,8 @@ export default function SubmitHours() {
       </div>
 
       <div className="card">
-        <h3 style={{ marginTop: 0 }}>In review / approved this period</h3>
+        <h3 style={{ marginTop: 0 }}>Submitted, approved &amp; paid this period</h3>
+        <p className="small-muted" style={{ marginTop: -6 }}>Click a row to see its history, or to add a note or a correction (also after it's paid).</p>
         {inFlight.length === 0 ? (
           <div className="empty-state">Nothing submitted yet.</div>
         ) : (
@@ -396,7 +415,7 @@ export default function SubmitHours() {
             </thead>
             <tbody>
               {inFlight.map((a) => (
-                <tr key={a.id}>
+                <tr key={a.id} className="clickable" onClick={() => setDrawer(a)}>
                   <td>{a.person.name}</td>
                   <td>{a.program.code}</td>
                   <td>{a.role.name}</td>
@@ -409,6 +428,7 @@ export default function SubmitHours() {
             </tbody>
           </table>
         )}
+        {drawer && <RowDrawer assignment={drawer} onClose={() => setDrawer(null)} onChanged={loadAssignments} />}
         <p className="small-muted" style={{ marginTop: 14 }}>
           Period total (all statuses): <strong>${monthTotal.toFixed(2)}</strong>
         </p>
